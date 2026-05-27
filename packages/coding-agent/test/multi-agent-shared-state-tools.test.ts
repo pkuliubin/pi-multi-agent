@@ -108,6 +108,48 @@ describe("shared_state tools", () => {
 		expect(manifest.get("prd/requirements.md")?.version).toBe(2);
 	});
 
+	it("stores metadata on create, preserves it on update without metadata, and replaces it when provided", async () => {
+		const { manifest, tools } = toolSet();
+		await executeTool(tools["shared_state.write"], {
+			path: "prd/requirements.md",
+			content: "draft",
+			metadata: { stage: "draft", tags: ["alpha"] },
+		});
+
+		expect(manifest.get("prd/requirements.md")?.metadata).toEqual({ stage: "draft", tags: ["alpha"] });
+
+		await executeTool(tools["shared_state.edit"], {
+			path: "prd/requirements.md",
+			edits: [{ oldText: "draft", newText: "reviewed" }],
+			expectedVersion: 1,
+		});
+		expect(manifest.get("prd/requirements.md")?.metadata).toEqual({ stage: "draft", tags: ["alpha"] });
+
+		await executeTool(tools["shared_state.edit"], {
+			path: "prd/requirements.md",
+			edits: [{ oldText: "reviewed", newText: "approved" }],
+			expectedVersion: 2,
+			metadata: { stage: "approved", reviewedBy: "agent-a" },
+		});
+
+		expect(manifest.get("prd/requirements.md")).toMatchObject({
+			version: 3,
+			metadata: { stage: "approved", reviewedBy: "agent-a" },
+		});
+	});
+
+	it("lists explicit authorized directories through the shared state root", async () => {
+		const { tools } = toolSet();
+		await executeTool(tools["shared_state.write"], { path: "prd/a.md", content: "a" });
+		await executeTool(tools["shared_state.write"], { path: "prd/nested/b.md", content: "b" });
+
+		const result = await executeTool(tools["shared_state.list"], { path: "prd" });
+
+		expect(result.content[0].text).toContain("a.md");
+		expect(result.content[0].text).toContain("nested/");
+		expect(result.content[0].text).not.toContain("prd/a.md");
+	});
+
 	it("lists only authorized manifest artifacts by default", async () => {
 		const manifest = new MemorySharedStateManifest();
 		const owner = toolSet({ manifest, agentId: "owner" });
@@ -197,6 +239,34 @@ describe("shared_state tools", () => {
 				expectedVersion: 2,
 			}),
 		).rejects.toThrow("version mismatch");
+	});
+
+	it("rejects write with expectedVersion when artifact does not exist", async () => {
+		const { tools } = toolSet();
+
+		await expect(
+			executeTool(tools["shared_state.write"], {
+				path: "prd/missing.md",
+				content: "first",
+				expectedVersion: 1,
+			}),
+		).rejects.toThrow("artifact not found for expectedVersion");
+	});
+
+	it("greps the first authorized space by default when path is omitted", async () => {
+		const { tools } = toolSet({
+			grants: [
+				{ space: "prd", permissions: ["list", "read", "grep", "write", "edit"] },
+				{ space: "analysis", permissions: ["list", "read", "grep", "write"] },
+			],
+		});
+		await executeTool(tools["shared_state.write"], { path: "prd/requirements.md", content: "alpha\nneedle" });
+		await executeTool(tools["shared_state.write"], { path: "analysis/summary.md", content: "needle\nbeta" });
+
+		const result = await executeTool(tools["shared_state.grep"], { pattern: "needle", literal: true });
+
+		expect(result.content[0].text).toContain("requirements.md:2: needle");
+		expect(result.content[0].text).not.toContain("summary.md");
 	});
 
 	it("exposes only shared_state tool names", () => {
