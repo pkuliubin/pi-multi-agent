@@ -29,6 +29,7 @@ import { configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { KeybindingsManager } from "./core/keybindings.ts";
 import type { ModelRegistry } from "./core/model-registry.ts";
 import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.ts";
+import { createDirectRunSubAgentTool } from "./core/multi-agent/index.ts";
 import { restoreStdout, takeOverStdout } from "./core/output-guard.ts";
 import type { CreateAgentSessionOptions } from "./core/sdk.ts";
 import {
@@ -374,6 +375,10 @@ function buildSessionOptions(
 	}
 	if (parsed.tools) {
 		options.tools = [...parsed.tools];
+	}
+
+	if (isTruthyEnvFlag(process.env.PI_MULTI_AGENT_DIRECT_SUBAGENT)) {
+		options.customTools = [...(options.customTools ?? []), createDirectRunSubAgentTool()];
 	}
 
 	return { options, cliThinkingFromModel, diagnostics };

@@ -1,0 +1,1143 @@
+# Pi Multi-Agent Phase 1 实施与测试计划
+
+## 1. 目标
+
+基于当前 pi-mono 架构，实现第一阶段 multi-agent 能力：
+
+```text
+PiSubAgent + Shared State AccessSurface + run_subagent tool
+```
+
+第一阶段只做 Direct / Shared State 型 SubAgent，不实现完整 Bus 和 Agent Team。
+
+核心目标：
+
+- 不修改 `packages/agent/src/agent.ts` 和 `packages/agent/src/agent-loop.ts`。
+- 新建 `packages/multi-agent`，承载 SubAgent 抽象、Shared State、run_subagent 执行器。
+- 通过 `AgentSessionLike / AgentSessionFactory` 兼容接入 `packages/coding-agent` 的现有 `AgentSession`。
+- SubAgent 不隐式继承主 agent 的 tools / skills / MCP / access surfaces。
+- SubAgent session 不走普通 CLI session 的默认资源自动发现路径；skills / MCP 只允许显式声明并由 factory 注入。
+- 主 agent 默认只看到 `SubAgentResult`，SubAgent 内部事件保留在自己的 session / trace 中。
+
+---
+
+## 2. 当前代码接入点
+
+### 2.1 现有 agent / session 层
+
+当前关键结构：
+
+```text
+packages/agent/src/agent.ts
+  Agent：单 agentic loop wrapper
+
+packages/agent/src/agent-loop.ts
+  runAgentLoop / runAgentLoopContinue：底层 loop
+
+packages/coding-agent/src/core/agent-session.ts
+  AgentSession：产品级 session wrapper，处理 tools、skills、extensions、retry、compaction、session persistence
+
+packages/coding-agent/src/core/session-manager.ts
+  SessionManager：jsonl / in-memory session 持久化和 buildSessionContext
+
+packages/coding-agent/src/core/sdk.ts
+  createAgentSession：创建 Agent + AgentSession
+```
+
+Phase 1 不改 `Agent` / `agent-loop`，只在其上层接入。
+
+### 2.2 现有工具装配层
+
+关键文件：
+
+```text
+packages/coding-agent/src/core/tools/index.ts
+  createReadTool / createGrepTool / createAllTools 等内建工具
+
+packages/coding-agent/src/core/tools/tool-definition-wrapper.ts
+  ToolDefinition <-> AgentTool wrapper
+
+packages/coding-agent/src/core/agent-session.ts
+  baseToolsOverride / customTools / _buildRuntime / _toolRegistry
+```
+
+`run_subagent` 应作为 coding-agent 的可注册工具接入，但其 executor 来自 `packages/multi-agent`。
+
+### 2.3 测试基础
+
+可复用测试设施：
+
+```text
+packages/coding-agent/test/suite/harness.ts
+  createHarness：基于 faux provider 创建 AgentSession 测试环境
+
+packages/agent/test/agent.test.ts
+packages/agent/test/agent-loop.test.ts
+  Agent 和 agent-loop 单元测试模式
+```
+
+Phase 1 新增测试优先使用 faux provider，不使用真实模型或外部 API。
+
+---
+
+## 3. 阶段划分总览
+
+```text
+Phase 0：包骨架与类型边界
+Phase 1：PiSubAgent core
+Phase 2：coding-agent adapter 接入与兼容性验证
+Phase 3：Shared State AccessSurface
+Phase 4：run_subagent tool executor
+Phase 5：集成测试与回归验证
+Phase 6：文档、示例与后续预留接口
+```
+
+每个阶段都应有明确验收标准。
+
+---
+
+## Phase 0：包骨架与类型边界
+
+### 目标
+
+建立 `packages/multi-agent`，确保 workspace、tsconfig、exports、基础类型能被 root `tsgo` 和 `npm run check` 识别。
+
+### 实现内容
+
+新增：
+
+```text
+packages/multi-agent/package.json
+packages/multi-agent/tsconfig.build.json
+packages/multi-agent/src/index.ts
+packages/multi-agent/src/types.ts
+packages/multi-agent/test/
+```
+
+更新：
+
+```text
+package.json workspaces 已包含 packages/*，无需额外新增 workspace pattern
+root tsconfig paths 新增 @earendil-works/pi-multi-agent
+root build script 需加入 packages/multi-agent 的 build 顺序
+```
+
+建议包名：
+
+```text
+@earendil-works/pi-multi-agent
+```
+
+依赖方向：
+
+```text
+packages/multi-agent -> packages/agent
+packages/multi-agent -> packages/ai
+packages/coding-agent -> packages/multi-agent
+```
+
+禁止：
+
+```text
+packages/multi-agent -> packages/coding-agent
+```
+
+### 核心类型
+
+第一批类型：
+
+```ts
+type SubAgentStatePolicy = "ephemeral" | "session" | "persistent";
+type SubAgentPhase = "idle" | "listening" | "running" | "closed";
+
+interface AgentSessionLike { ... }
+interface AgentSessionFactory { ... }
+interface PiSubAgentDefinition { ... }
+interface SubAgentResult { ... }
+```
+
+说明：
+
+- `persistent` 第一阶段只保留类型，不作为可靠能力实现。
+- 如果第一阶段接收到 `persistent`，实现必须明确 reject 或降级到 `session`。
+
+### 单元测试
+
+新增：
+
+```text
+packages/multi-agent/test/types.test.ts
+```
+
+测试内容：
+
+- package 可 import。
+- `SubAgentRegistry` 空实现可初始化。
+- `AgentSessionLike` mock 能满足 `PiSubAgentInstance` 构造。
+
+### 验收方式
+
+```text
+npm --prefix packages/multi-agent run test
+npm --prefix packages/multi-agent run build
+npm run check
+```
+
+注意：代码变更后最终必须跑 root `npm run check`。
+
+---
+
+## Phase 1：PiSubAgent core
+
+### 目标
+
+实现不带 Shared State 的 Direct SubAgent。此时如果不配置 access surfaces，SubAgent 应退化成普通 AgentSession-like 执行单元。
+
+### 实现内容
+
+新增：
+
+```text
+packages/multi-agent/src/sub-agent.ts
+packages/multi-agent/src/registry.ts
+packages/multi-agent/src/session-like.ts
+```
+
+核心类：
+
+```ts
+class PiSubAgentInstance {
+  readonly definition: PiSubAgentDefinition;
+  readonly session: AgentSessionLike;
+  phase: SubAgentPhase;
+
+  prompt(...): Promise<void>;
+  steer(...): Promise<void>;
+  followUp(...): Promise<void>;
+  abort(): Promise<void>;
+  waitForIdle(): Promise<void>;
+  subscribe(...): () => void;
+
+  invoke(task: SubAgentTask): Promise<SubAgentResult>;
+  inspect(): SubAgentInspection;
+  close(): Promise<void>;
+}
+```
+
+`AgentSessionLike` 建议包含 `dispose(): Promise<void> | void`，以便 `close()` 释放底层 session/runtime 资源，而不只是修改 phase。
+
+语义边界：
+
+- `abort()`：只停止当前 active run，实例仍可继续复用。
+- `close()`：关闭实例并禁止后续再次 `invoke()`。
+- `dispose()`：由 `close()` 调用，用于释放底层 session/runtime 资源；不等于删除 session 文件。
+
+`invoke(task)` 行为：
+
+```text
+phase idle -> running
+session.prompt(formatted task)
+waitForIdle
+extract final assistant text
+phase running -> idle / closed
+return SubAgentResult
+```
+
+`finalText` 提取规则：
+
+```text
+取本次 invocation 完成后新增的最后一条 assistant message 中的文本内容
+若最终状态为 failed / aborted，则 finalText 为空，错误通过 status + errorMessage 表达
+若 completed 但没有 assistant 文本输出，则 finalText 为空字符串
+```
+
+`prompt()` 语义必须保持：立即触发一次 agentic loop。
+
+### SubAgentRegistry
+
+```ts
+class SubAgentRegistry {
+  register(definition: PiSubAgentDefinition): void;
+  get(id: string): PiSubAgentDefinition | undefined;
+  list(): PiSubAgentDefinition[];
+}
+```
+
+后续可扩展 active instance 管理，但 Phase 1 只需要 definition registry。
+
+### 单元测试
+
+新增：
+
+```text
+packages/multi-agent/test/sub-agent.test.ts
+packages/multi-agent/test/registry.test.ts
+```
+
+使用 mock `AgentSessionLike`。
+
+测试内容：
+
+- `prompt()` 转发到 session。
+- `invoke()` 调用 `session.prompt()` 并返回 final text。
+- `invoke()` 期间 phase 为 `running`，结束后回到 `idle`。
+- `abort()` 转发。
+- `close()` 进入 `closed`，closed 后不允许再次 invoke。
+- `SubAgentRegistry` 防止重复 id 或按设计覆盖，行为明确。
+
+### 验收方式
+
+```text
+npm --prefix packages/multi-agent run test
+npm --prefix packages/multi-agent run build
+```
+
+### 当前实现结果（已完成）
+
+已落地内容：
+
+```text
+packages/multi-agent/package.json
+packages/multi-agent/tsconfig.build.json
+packages/multi-agent/src/index.ts
+packages/multi-agent/src/types.ts
+packages/multi-agent/src/session-like.ts
+packages/multi-agent/src/sub-agent.ts
+packages/multi-agent/src/registry.ts
+packages/multi-agent/test/registry.test.ts
+packages/multi-agent/test/sub-agent.test.ts
+packages/multi-agent/test/test-utils.ts
+```
+
+实现要点：
+
+- `packages/multi-agent` 已作为独立 workspace package 接入，包名为 `@earendil-works/pi-multi-agent`。
+- `package.json` root build 顺序已调整为 `tui -> ai -> agent -> multi-agent -> coding-agent`。
+- root `tsconfig.json` 已新增 `@earendil-works/pi-multi-agent` path mapping。
+- `PiSubAgentInstance` 已实现 `prompt / steer / followUp / abort / waitForIdle / subscribe / invoke / inspect / close`。
+- `persistent` state policy 在 instance 构造阶段明确 reject；registry 仍允许保存 definition。
+- `SubAgentRegistry` 已实现 `register / get / list`，重复 id 会 reject，`list()` 返回拷贝。
+
+当前行为验证：
+
+- mock 单测覆盖 registry 注册、查询、重复 id、list 拷贝、persistent instance reject。
+- mock 单测覆盖 `PiSubAgentInstance` phase 流转、prompt 转发、invoke finalText 提取、error/aborted 状态、并发拒绝、abort、close、subscribe、inspect。
+- `invoke()` 只从本次新增 assistant messages 中提取最后一条 assistant 文本，并拼接 text blocks。
+- `close()` 会调用 `session.dispose()`，closed 后 `prompt / invoke / followUp / steer` 都会 reject。
+
+已执行验收：
+
+```text
+npm --prefix packages/multi-agent run test
+# 2 files passed, 16 tests passed
+
+npm --prefix packages/multi-agent run build
+# passed during validation
+
+npm run check
+# passed
+```
+
+验证边界：
+
+- 这些验证只能证明第一阶段 core 的 mock 单元行为和 monorepo typecheck 通过。
+- 还不能证明它与真实 `packages/coding-agent` `AgentSession` 完全兼容。
+- 真实 `prompt / followUp / waitForIdle / abort` 语义、session 复用、resource isolation，需要 Phase 2 adapter 接入后验证。
+- Shared State、`run_subagent`、bus 均未在本阶段实现或验证。
+
+---
+
+## Phase 2：接入 coding-agent 并验证 PiSubAgent 兼容性
+
+### 目标
+
+先验证 `PiSubAgent` 能通过 adapter 包装现有 `AgentSession`，在不配置 access surfaces、不引入 `run_subagent` tool 的情况下，行为可作为当前 AgentSession 的兼容超集。
+同时确认不形成依赖成环，并通过 sub-agent 专用资源装配策略，避免自动继承普通 CLI session 的项目级 context、skills、extensions 和 MCP。
+
+### 实现内容
+
+新增或修改：
+
+```text
+packages/coding-agent/src/core/multi-agent/agent-session-adapter.ts
+packages/coding-agent/src/core/multi-agent/session-factory.ts
+packages/coding-agent/src/core/multi-agent/resource-loader.ts（可选，也可并入 session-factory.ts）
+packages/coding-agent/src/core/sdk.ts 或 AgentSession runtime 构建点
+```
+
+Adapter：
+
+```ts
+function adaptAgentSession(session: AgentSession): AgentSessionLike;
+```
+
+Factory：
+
+```ts
+class CodingAgentSessionFactory implements AgentSessionFactory {
+  create(input: CreateSubAgentSessionInput): Promise<AgentSessionLike>;
+}
+```
+
+Factory 内部复用现有能力：
+
+```text
+Agent
+AgentSession
+SessionManager
+SettingsManager
+ModelRegistry
+ResourceLoader
+baseToolsOverride / customTools
+```
+
+但必须按 SubAgentDefinition 创建受限能力集合。
+
+### SubAgent 专用资源装配策略
+
+Factory 不能直接复用普通 CLI session 的默认 `DefaultResourceLoader` 自动发现行为。Phase 2 应使用受限资源装配策略：
+
+```text
+默认关闭：
+- context files 自动发现
+- skills 自动扫描
+- prompt templates 自动扫描
+- themes 自动扫描
+- extensions 自动加载
+
+只允许：
+- SubAgentDefinition 显式声明的 tools
+- access surface 生成的 tools
+- SubAgentDefinition 显式声明并由 factory 注入的 skills / MCP
+- factory 显式设置的 system prompt / append prompt
+```
+
+这意味着：
+
+- SubAgent 可以拥有 skills 和 MCP，但不能来自项目默认自动发现。
+- `AgentSessionFactory.create()` 是资源支持性的最终校验点；若 definition 声明了当前阶段不支持的 skills / MCP 注入方式，应在这里返回结构化错误。
+- SubAgent 的 system prompt 仅由 `initialState.systemPrompt` 与 factory 显式追加的 prompt 构成，不自动拼入项目级 context files。
+- session 文件落盘位置由 `coding-agent` 内部策略决定，不在 `packages/multi-agent` 中固化路径协议。
+
+### 兼容性验证范围
+
+这一阶段不接入 Shared State，也不注册 `run_subagent`。重点验证：
+
+```text
+prompt / followUp / steer 会触发同等 agentic loop
+sessionId / sessionFile / messages / state 语义一致
+model / thinkingLevel / abort / waitForIdle / close / subscribe 行为一致
+未配置 access surfaces 时，不注入额外 tools / resources
+SubAgent 内部事件和 session 仍保持隔离
+```
+
+### Phase 2 支持矩阵
+
+| 能力 | Phase 2 默认 | Phase 2 支持方式 |
+|---|---|---|
+| tools | 支持 | definition 显式声明 |
+| access surfaces | 不启用 | 本阶段只验证无 access surfaces 的兼容性 |
+| skills | 预留/可选 | 仅显式注入；未支持则 factory 报错 |
+| MCP | 预留/可选 | 仅显式注入；未支持则 factory 报错 |
+| project auto-discovery | 不支持 | 禁止 |
+
+### 接入测试
+
+新增：
+
+```text
+packages/coding-agent/test/multi-agent-adapter.test.ts
+```
+
+使用 `packages/coding-agent/test/suite/harness.ts` 或同等 faux provider harness。
+
+测试内容：
+
+- coding-agent 可以创建 SubAgent session。
+- SubAgent 不继承主 agent tools。
+- SubAgent 只拿 definition 声明的 tools。
+- SubAgent 默认不自动加载项目级 context files / skills / extensions / MCP。
+- skills / MCP 若被支持，必须来自 definition 显式声明与 factory 注入。
+- 若 definition 声明了当前阶段未支持的 skills / MCP 注入方式，factory 返回明确错误。
+- 不配置 access surfaces 时，PiSubAgent 行为等价于受限资源装配下的 AgentSession。
+- SubAgent 内部 messages 不进入主 session。
+- SubAgent session 独立保存或在 in-memory 模式独立存在。
+
+### 验收方式
+
+运行针对性测试：
+
+```text
+cd packages/coding-agent
+node ../../node_modules/vitest/dist/cli.js --run test/multi-agent-adapter.test.ts
+```
+
+最终仍需：
+
+```text
+npm run check
+```
+
+### Phase 2-1：CLI / TUI 主流程接入验证
+
+目标：
+
+在 Shared State 之前，先把当前 direct `PiSubAgent` 接入主流程，证明它能从普通 CLI / TUI session 中被主 agent 调用。此阶段仍然保持 Shared State、bus、agent-team 为空。
+
+设计边界：
+
+- 通过环境变量 `PI_MULTI_AGENT_DIRECT_SUBAGENT=1` 开启，默认不改变现有 CLI / TUI 行为。
+- 注册一个临时 direct `run_subagent` custom tool 到主 session。
+- sub-agent 由 `CodingAgentSessionFactory` 创建，继续使用 restricted resource loader。
+- sub-agent 默认无 tools、无 Shared State、无自动 context files / skills / extensions。
+- 主 session 只收到 `run_subagent` 的 tool result；sub-agent 内部 transcript 不写入主 session。
+- 该 tool 是 Phase 4 正式 `run_subagent` executor 之前的主流程验证桥，不引入 worker registry、Shared State workspace、并发策略或超时策略。
+
+实现内容：
+
+```text
+packages/coding-agent/src/core/multi-agent/direct-subagent-tool.ts
+packages/coding-agent/src/main.ts
+packages/coding-agent/src/core/sdk.ts
+packages/coding-agent/test/multi-agent-direct-tool.test.ts
+```
+
+主流程接入点：
+
+- `main.ts` 在 `buildSessionOptions()` 中检测 `PI_MULTI_AGENT_DIRECT_SUBAGENT`。
+- 开启后追加 `createDirectRunSubAgentTool()` 到 `customTools`。
+- `sdk.ts` 调整 `noTools: "all"` 语义：禁用 built-in tools，但保留显式传入的 `customTools`，这样可用 `--no-tools` / `noTools` 做最小工具面验证。
+
+自动化验证：
+
+```text
+cd packages/coding-agent
+node ../../node_modules/vitest/dist/cli.js --run test/multi-agent-direct-tool.test.ts
+```
+
+测试覆盖：
+
+- 真实 `AgentSession` 中 `run_subagent` 可以触发 direct sub-agent agentic loop。
+- sub-agent 结果通过 tool result 回到主 agent。
+- 主 session transcript 不包含 sub-agent 的 user prompt，只包含主 prompt、tool result 和主 agent 后续回答。
+- CLI print mode 在 `PI_MULTI_AGENT_DIRECT_SUBAGENT=1` 下能加载该 tool 并完成一轮调用。
+
+TUI 手动验证方式：
+
+```bash
+cd /Users/liubin/Projects/pi-multi-agent
+PI_MULTI_AGENT_DIRECT_SUBAGENT=1 ./pi-test.sh --provider deepseek --model deepseek-v4-flash
+```
+
+进入 TUI 后输入：
+
+```text
+请使用 run_subagent 工具，让 sub-agent 回答：Say exactly: subagent-tui-ok。然后把 sub-agent 的结果原样告诉我。
+```
+
+期望现象：
+
+- TUI 中出现 `run_subagent` 工具调用。
+- 工具结果包含 `status: completed` 和 `subagent-tui-ok`。
+- 主 agent 最终回复中包含 `subagent-tui-ok`。
+
+如果模型没有主动调用工具，可把提示改得更强：
+
+```text
+必须调用 run_subagent，不要自己回答。task 参数填写：Say exactly: subagent-tui-ok。
+```
+
+### Phase 2 完成状态（已完成）
+
+Phase 2 / Phase 2-1 已完成，可以作为 Shared State 前的兼容性基线。
+
+已实现文件：
+
+```text
+packages/coding-agent/src/core/multi-agent/agent-session-adapter.ts
+packages/coding-agent/src/core/multi-agent/session-factory.ts
+packages/coding-agent/src/core/multi-agent/restricted-resource-loader.ts
+packages/coding-agent/src/core/multi-agent/direct-subagent-tool.ts
+packages/coding-agent/src/main.ts
+packages/coding-agent/src/core/sdk.ts
+packages/coding-agent/test/multi-agent-adapter.test.ts
+packages/coding-agent/test/multi-agent-deepseek-smoke.test.ts
+packages/coding-agent/test/multi-agent-direct-tool.test.ts
+```
+
+实现说明：
+
+- `packages/multi-agent` 仍不依赖 `packages/coding-agent`，只暴露 `AgentSessionLike` / `AgentSessionFactory` 等接口。
+- `adaptAgentSession()` 是薄 adapter，直接转发 `prompt / steer / followUp / abort / waitForIdle / subscribe / dispose`。
+- `CodingAgentSessionFactory` 复用真实 `createAgentSession()`，但默认使用 in-memory session manager 和 restricted resource loader。
+- restricted sub-agent 默认不加载 AGENTS/CLAUDE context files、skills、prompt templates、themes、extensions。
+- Phase 2 不支持 definition metadata 声明 `tools / skills / mcp / accessSurfaces`，出现时 factory 明确抛错。
+- Phase 2-1 提供 `PI_MULTI_AGENT_DIRECT_SUBAGENT=1` 临时开关，把 direct `run_subagent` 注册进 CLI/TUI 主流程。
+- `run_subagent` 当前只创建 direct isolated sub-agent；无 Shared State、无 worker registry、无 bus、无并发策略、无 timeout policy。
+- `sdk.ts` 调整了 `noTools: "all"` 语义：禁用 built-in tools，但保留显式 custom tools，保证 Phase 2-1 可在最小工具面下验证。
+
+自动化验证方式与结果：
+
+```bash
+cd packages/coding-agent
+node ../../node_modules/vitest/dist/cli.js --run test/multi-agent-adapter.test.ts test/multi-agent-direct-tool.test.ts
+```
+
+结果：
+
+```text
+Test Files  2 passed (2)
+Tests       10 passed (10)
+```
+
+```bash
+npm --prefix packages/multi-agent run test
+```
+
+结果：
+
+```text
+Test Files  2 passed (2)
+Tests       16 passed (16)
+```
+
+```bash
+npm run check
+```
+
+结果：
+
+```text
+passed
+```
+
+真实 provider smoke：
+
+```bash
+cd packages/coding-agent
+PI_MULTI_AGENT_DEEPSEEK_SMOKE=1 DEEPSEEK_API_KEY=<real-key> \
+  node ../../node_modules/vitest/dist/cli.js --run test/multi-agent-deepseek-smoke.test.ts
+```
+
+结果：
+
+```text
+Test Files  1 passed (1)
+Tests       1 passed (1)
+```
+
+TUI 手动验证结果：
+
+- 使用 `PI_MULTI_AGENT_DIRECT_SUBAGENT=1` 启动 TUI。
+- 提示主 agent 必须调用 `run_subagent`，task 为 `Say exactly: subagent-tui-ok`。
+- TUI 中成功出现 `run_subagent` tool call。
+- tool result 返回 `status: completed`、`agentId: direct-worker`、`messages: 0->2`、`subagent-tui-ok`。
+- 主 agent 最终回复包含 `subagent-tui-ok`。
+
+补充验证：
+
+- 如果用户没有要求调用 `run_subagent`，主 agent 会直接回答。
+- 这说明 Phase 2-1 只是把 sub-agent 作为普通 tool 接入主流程，不会强制改写默认 agentic loop。
+- 后续若需要默认 worker 模式，应在 orchestration policy 层实现，而不是在 SubAgent core 层实现。
+
+Phase 2 结论：
+
+- `PiSubAgentInstance` 可以包装真实 `coding-agent AgentSession`。
+- 在无 Shared State、无额外 access surface 时，sub-agent 能退化为一个受限资源装配下的普通 AgentSession。
+- CLI/TUI 主流程可以调用 direct sub-agent。
+- Phase 3 可以在此基础上开始实现 Shared State AccessSurface。
+
+---
+
+## Phase 3：Shared State AccessSurface
+
+### 目标
+
+实现 Shared State 作为第一个 access surface。它不进入 agent loop 内核，只生成可挂载给 SubAgent 的 tools。
+
+本阶段已从早期的内存 KV 型 SharedMemory 收敛为 file-backed Shared State：
+
+- 正文内容落盘到 shared state root。
+- provenance / owner / version / permission 等治理信息保存在内存 manifest。
+- `path` 第一段作为 `space`，例如 `prd/demo.md`、`analysis/findings.md`。
+- 不预定义 PRD、decision log、analysis report 等业务类型，上层通过 prompt 和工具约定组织内容。
+- Phase 3 只实现工具和 manifest，不把 Shared State 挂载到真实 `run_subagent`。
+
+### 实现内容
+
+新增：
+
+```text
+packages/multi-agent/src/shared-state/types.ts
+packages/multi-agent/src/shared-state/memory-manifest.ts
+packages/multi-agent/src/shared-state/index.ts
+
+packages/coding-agent/src/core/multi-agent/shared-state-tools.ts
+packages/coding-agent/examples/multi-agent/shared-state-smoke.ts
+```
+
+核心类型：
+
+```ts
+type SharedStatePermission = "list" | "read" | "grep" | "write" | "edit";
+
+interface SharedStateArtifact { ... }
+interface SharedStateManifest { ... }
+interface SharedStateGrant { ... }
+interface SharedStateAccessSurfaceDefinition { ... }
+```
+
+Manifest：
+
+```text
+MemorySharedStateManifest
+```
+
+Tools：
+
+```text
+shared_state.list
+shared_state.read
+shared_state.grep
+shared_state.write
+shared_state.edit
+```
+
+默认 root 约定：
+
+```text
+.pi/multi-agent/shared-state/<runId>/
+```
+
+Phase 3 API 支持显式传入 root；测试和 smoke 使用 temp/root 路径。默认 root 在后续 orchestration 接入时启用。
+
+### 行为约束
+
+- tool input 的 `path` 必须是相对路径。
+- path 不能包含 escape：`..`、绝对路径、home path、Windows drive path 等。
+- path 第一段是授权 `space`。
+- agent 只能访问 grant 中允许的 spaces。
+- `list/read/grep` 需要对应权限。
+- `write` 创建新文件需要 `write` 权限。
+- `write` 覆盖已有文件需要 `edit` 权限，并且当前 agent 是 owner，除非 grant 显式 `canOverwrite: true`。
+- `edit` 需要 `edit` 权限，并且当前 agent 是 owner，除非 grant 显式 `canEditOthers: true`。
+- 新文件默认 `ownerAgentId = currentAgentId`。
+- 所有 write/edit 成功后更新 manifest version、updatedBy、updatedAt。
+- `expectedVersion` 可选；传入时必须匹配 manifest 当前 version，否则 reject。
+- `shared_state.edit` 使用现有 exact replacement 语义，不新增 patch DSL。
+- `shared_state.grep` 第一版是文件级 grep，不做 semantic search / embedding。
+
+### 单元测试
+
+新增：
+
+```text
+packages/multi-agent/test/shared-state-manifest.test.ts
+packages/coding-agent/test/multi-agent-shared-state-tools.test.ts
+```
+
+测试内容：
+
+- manifest create 后 version 从 1 开始。
+- manifest update 后 version 递增。
+- owner / createdBy / updatedBy 正确记录。
+- expectedVersion 匹配时成功，不匹配时失败。
+- manifest list by space 正常工作。
+- `shared_state.write` 能在授权 space 创建文件并写入 manifest。
+- `shared_state.read` 能读取授权文件，支持 offset / limit。
+- `shared_state.grep` 能搜索授权 space 内文件。
+- `shared_state.edit` 能局部修改文件并递增 manifest version。
+- `shared_state.list` 只列出授权 space 的内容。
+- 未授权 space 访问失败。
+- path escape 被拒绝：绝对路径、`../`、home path。
+- 非 owner 默认不能 overwrite/edit 其他 agent artifact。
+- `canOverwrite` / `canEditOthers` 开启后允许对应操作。
+- expectedVersion mismatch 时 write/edit 失败。
+- tool 名称只暴露 `shared_state.*`，不暴露原始 `read/write/edit/grep/ls`。
+
+### Smoke 测试
+
+新增：
+
+```text
+packages/coding-agent/examples/multi-agent/shared-state-smoke.ts
+```
+
+该脚本用于手动验证真实文件行为，会创建：
+
+```text
+/tmp/pi-shared-state-smoke/prd/demo.md
+/tmp/pi-shared-state-smoke/analysis/findings.md
+```
+
+验证流程：
+
+- owner-agent 创建 PRD 和 analysis 文件。
+- assert `write` 后磁盘内容与 manifest version 正确。
+- owner-agent 使用 `edit` 将 PRD 状态从 `draft` 改为 `reviewed`。
+- assert `read` 返回目标内容，且不会包含尚未发生的后续编辑内容。
+- assert `grep` 只在目标 space 内返回匹配内容。
+- assert `list` 返回授权 artifacts 和版本信息。
+- reader-agent 只有 `list/read/grep` 权限，可以读取但不能写入或编辑。
+- 权限失败、path escape、version mismatch 后，assert 文件内容和 manifest version 均未被污染。
+- editor-agent 在 `canEditOthers: true` 下可以编辑 owner artifact，并更新 `updatedBy`。
+- 最终 assert PRD 文件、analysis 文件和 manifest 版本均符合预期。
+
+### 验收方式
+
+```bash
+npm --prefix packages/multi-agent run test
+cd packages/coding-agent
+node ../../node_modules/vitest/dist/cli.js --run test/multi-agent-shared-state-tools.test.ts
+cd ../..
+node --import ./node_modules/tsx/dist/loader.mjs packages/coding-agent/examples/multi-agent/shared-state-smoke.ts
+npm run check
+```
+
+当前验证结果：
+
+- `npm --prefix packages/multi-agent run test` 通过。
+- `packages/coding-agent/test/multi-agent-shared-state-tools.test.ts` 通过。
+- `packages/coding-agent/examples/multi-agent/shared-state-smoke.ts` 通过。
+- `npm run check` 通过。
+
+### 当前实现边界
+
+- Phase 3 不接入 direct `run_subagent`；把 Shared State mount 到 sub-agent session 放到 Phase 4。
+- Phase 3 不做 file manifest persistence；manifest 丢失后程序不会自动从文件恢复。
+- Phase 3 不做 lock、merge、semantic search、bus、agent-team。
+- `shared_state` 是对外概念名；文件 root 是实现细节。
+
+---
+
+## Phase 4：run_subagent tool executor
+
+### 目标
+
+实现 Orchestrator–Workers 的最小执行入口：主 agent 通过 `run_subagent` tool 调用 Direct SubAgent。
+
+### 实现内容
+
+新增：
+
+```text
+packages/multi-agent/src/run-subagent/tool.ts
+packages/multi-agent/src/run-subagent/runner.ts
+packages/multi-agent/src/run-subagent/types.ts
+```
+
+核心输入：
+
+```ts
+interface RunSubAgentInput {
+  agentId: string;
+  task: string;
+  invocationId?: string;
+  statePolicyOverride?: "ephemeral" | "session";
+  timeoutMs?: number;
+}
+```
+
+覆盖规则：
+
+```text
+statePolicyOverride 只允许在 ephemeral 与 session 之间覆盖 definition 默认值
+不允许通过 override 提升到 persistent
+若 definition 或调用路径请求 persistent，第一阶段必须 reject 或显式降级到 session
+```
+
+Runner 依赖：
+
+```ts
+interface RunSubAgentRunnerOptions {
+  registry: SubAgentRegistry;
+  sessionFactory: AgentSessionFactory;
+  maxConcurrentSubAgents?: number;
+}
+```
+
+执行流程：
+
+```text
+resolve definition
+resolve statePolicy
+create/get PiSubAgentInstance
+mount access surface tools
+invoke(task)
+extract SubAgentResult
+return tool result
+```
+
+### 并发策略
+
+Phase 4 只做轻量策略：
+
+```text
+session/persistent instance：同一时间只允许一个 active run
+maxConcurrentSubAgents：单个 RunSubAgentRunner 实例内的并发上限
+running 冲突：第一版直接返回 error；后续再做 queue
+```
+
+
+### coding-agent 工具注册方式
+
+`packages/multi-agent` 提供 `createRunSubAgentTool(...)` 或 ToolDefinition factory。
+
+`packages/coding-agent` 负责：
+
+```text
+构造 registry
+构造 sessionFactory
+构造 sharedMemory store/access surface
+把 run_subagent 注册到主 agent 可用工具集合
+```
+
+第一版可先不暴露给所有用户，放在内部或 behind flag：
+
+```text
+settings flag
+CLI hidden option
+SDK option
+```
+
+### 单元测试
+
+新增：
+
+```text
+packages/multi-agent/test/run-subagent.test.ts
+```
+
+使用 mock `AgentSessionFactory`。
+
+测试内容：
+
+- 找不到 agentId 返回 error result。
+- ephemeral 每次调用创建新 session。
+- session policy 多次调用复用 instance/session。
+- session instance running 时第二次调用被拒绝。
+- timeout 触发 abort。
+- tool result 默认只包含 `SubAgentResult.finalText` 和必要 metadata。
+- 不泄漏 SubAgent 内部 full transcript。
+
+### 验收方式
+
+```text
+npm --prefix packages/multi-agent run test
+npm --prefix packages/multi-agent run build
+```
+
+---
+
+## Phase 5：整体行为测试
+
+### 目标
+
+验证从主 agent 到 sub-agent 的真实 agentic loop 行为，包含 Shared State 读写与并发。
+
+### 测试用例
+
+新增：
+
+```text
+packages/coding-agent/test/multi-agent-integration.test.ts
+```
+
+测试场景：
+
+1. **Direct worker**
+   - 主 agent 调用 `run_subagent`。
+   - worker 返回 final text。
+   - 主 agent 收到 tool result 后继续回答。
+
+2. **Shared State read/write**
+   - worker A 写入 shared state。
+   - worker B 读取 shared state。
+   - 主 agent 汇总结果。
+
+3. **权限隔离**
+   - 主 agent 有 edit/bash。
+   - worker definition 只给 shared_state.read。
+   - worker 无法调用 edit/bash。
+
+4. **session policy**
+   - session worker 第一次记住上下文。
+   - 第二次 invoke 能看到自己的历史。
+   - ephemeral worker 第二次看不到历史。
+
+5. **并发**
+   - 主 agent 同一轮发两个 `run_subagent` calls。
+   - 两个 ephemeral workers 并发完成。
+   - 同一个 session worker 并发调用被拒绝或按策略处理。
+
+6. **事件隔离**
+   - SubAgent 内部 tool calls 不出现在主 session messages。
+   - 主 session 只有 `run_subagent` tool result。
+
+7. **资源隔离**
+   - SubAgent 默认看不到项目根 `CLAUDE.md` / `AGENTS.md`。
+   - SubAgent 默认不加载项目自动发现的 skills / extensions / MCP。
+   - 若 definition 未显式声明，则这些资源不可用。
+
+### 验收方式
+
+```text
+cd packages/coding-agent
+node ../../node_modules/vitest/dist/cli.js --run test/multi-agent-integration.test.ts
+```
+
+然后：
+
+```text
+./test.sh
+npm run check
+```
+
+注意：根据项目规则，不直接跑 full vitest suite；非 e2e 总体验证用 `./test.sh`。
+
+---
+
+## Phase 6：文档、示例与后续预留
+
+### 目标
+
+让后续开发者能理解如何定义 SubAgent、如何接入 Shared State、如何使用 `run_subagent`。
+
+### 实现内容
+
+更新：
+
+```text
+wiki/pi_multi_agent_subagent_design.md
+wiki/pi_multi_agent_phase1_implementation_plan.md
+```
+
+可新增示例：
+
+```text
+packages/coding-agent/examples/multi-agent/simple-orchestrator.ts
+```
+
+示例内容：
+
+```text
+orchestrator
+  run_subagent(product-reviewer)
+  run_subagent(engineering-reviewer)
+  shared_state.read/write
+```
+
+Bus 预留接口但不实现：
+
+```text
+listen(subscription)
+BusMessage
+Subscription
+SubAgentPhase.listening
+```
+
+### 验收方式
+
+- 示例能 typecheck。
+- 文档与实际导出 API 名称一致。
+- `npm run check` 通过。
+
+---
+
+## 4. 补充：第一阶段文件结构建议
+
+```text
+packages/multi-agent/
+  package.json
+  tsconfig.build.json
+  src/
+    index.ts
+    types.ts
+    session-like.ts
+    sub-agent.ts
+    registry.ts
+    access-surface.ts
+    shared-memory/
+      types.ts
+      memory-store.ts
+      file-store.ts
+      tools.ts
+    run-subagent/
+      types.ts
+      runner.ts
+      tool.ts
+  test/
+    registry.test.ts
+    sub-agent.test.ts
+    shared-memory-store.test.ts
+    shared-memory-tools.test.ts
+    run-subagent.test.ts
+
+packages/coding-agent/src/core/multi-agent/
+  agent-session-adapter.ts
+  session-factory.ts
+  resource-loader.ts
+  tools.ts                    （Phase 4 注册 run_subagent 时新增）
+
+packages/coding-agent/test/
+  multi-agent-adapter.test.ts
+  run-subagent-tool.test.ts   （Phase 4/5 注册 run_subagent 后新增）
+  multi-agent-integration.test.ts
+```
+
+---
+
+## 5. 补充：验收矩阵
+
+| 阶段 | 目标 | 验收 |
+|---|---|---|
+| Phase 0 | 包骨架和类型边界 | `npm --prefix packages/multi-agent run build/test` |
+| Phase 1 | PiSubAgent core | mock AgentSessionLike 单测通过 |
+| Phase 2 | coding-agent adapter 兼容验证 | PiSubAgent 可包装现有 AgentSession，且无额外 access surfaces 时行为一致 |
+| Phase 3 | Shared State access surface | file-backed workspace + manifest + tools/smoke 验证通过 |
+| Phase 4 | run_subagent executor | runner 单测覆盖 success/error/timeout/concurrency |
+| Phase 5 | 整体行为测试 | faux provider integration 通过 |
+| Phase 6 | 文档和示例 | API 与文档一致，`npm run check` 通过 |
+
+---
+
+## 6. 补充：不做事项
+
+第一阶段明确不做：
+
+```text
+修改 packages/agent/src/agent.ts
+修改 packages/agent/src/agent-loop.ts
+完整 CoordinationPolicy 框架
+完整 Message Bus runtime
+Agent Team persistent runtime
+LLM semantic routing
+sibling direct invocation
+复杂 shared memory merge/conflict resolution
+真实 provider / 外部 API 测试
+```
+
+---
+
+## 7. 补充：总体验收命令
+
+代码变更后，根据项目规则：
+
+```text
+npm run check
+```
+
+如果新增或修改测试文件，先运行对应测试：
+
+```text
+npm --prefix packages/multi-agent run test
+cd packages/coding-agent && node ../../node_modules/vitest/dist/cli.js --run test/<specific>.test.ts
+```
+
+整体非 e2e 测试：
+
+```text
+./test.sh
+```
+
+不要直接运行 full vitest suite；`./test.sh` 会清理真实 API key 环境，避免误触 e2e / paid provider。
