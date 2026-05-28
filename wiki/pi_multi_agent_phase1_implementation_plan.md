@@ -1348,6 +1348,7 @@ packages/coding-agent/test/
 | Phase 4 | run_subagent executor | runner 单测覆盖 success/error/timeout/concurrency |
 | Phase 5 | 整体行为测试 | faux provider integration 通过 |
 | Phase 6 | Persistent / Resumable SubAgent Runtime | role-session resume、persistent manifest、busy/close lifecycle、targeted tests 和 `npm run check` 通过 |
+| Phase 7 | run_subagent 事件桥接式 observability | TUI / CLI json 可见 progress snapshot，compact summary 与 targeted tests 通过 |
 
 ---
 

@@ -12,13 +12,18 @@ export {
 } from "./role-session-index.ts";
 export { RunSubAgentRunner, SubAgentInstancePool } from "./run-subagent.ts";
 export type {
+	CompactSubAgentEvent,
 	CreateSubAgentInstanceInput,
 	RunSubAgentInput,
+	RunSubAgentInvocationOptions,
+	RunSubAgentProgressSummary,
 	RunSubAgentRunnerOptions,
 	RunSubAgentToolResult,
 	SharedStateSubAgentAccessSurfaceDefinition,
 	SubAgentAccessSurfaceDefinition,
 	SubAgentCapabilities,
+	SubAgentEventEnvelope,
+	SubAgentEventObserver,
 	SubAgentLifecycleStore,
 	SubAgentRoleSessionBinding,
 } from "./run-subagent-types.ts";

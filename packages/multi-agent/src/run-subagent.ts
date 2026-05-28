@@ -2,10 +2,13 @@ import { createDefinitionIdentity } from "./role-session-index.ts";
 import type {
 	CreateSubAgentInstanceInput,
 	RunSubAgentInput,
+	RunSubAgentInvocationOptions,
 	RunSubAgentRunnerOptions,
 	RunSubAgentSessionFactory,
 	SubAgentAccessSurfaceDefinition,
 	SubAgentCapabilities,
+	SubAgentEventEnvelope,
+	SubAgentEventObserver,
 	SubAgentRoleSessionBinding,
 } from "./run-subagent-types.ts";
 import { PiSubAgentInstance } from "./sub-agent.ts";
@@ -120,7 +123,7 @@ export class RunSubAgentRunner {
 		this.options = options;
 	}
 
-	async run(input: RunSubAgentInput): Promise<SubAgentResult> {
+	async run(input: RunSubAgentInput, invocationOptions: RunSubAgentInvocationOptions = {}): Promise<SubAgentResult> {
 		const startedAt = Date.now();
 		const definition = this.options.registry.get(input.agentId);
 		if (!definition) {
@@ -167,7 +170,7 @@ export class RunSubAgentRunner {
 			}
 			this.markRunning(definition, roleSession, instance);
 			acquiredRun = true;
-			return await this.invokeWithOptionalTimeout(instance, input, startedAt);
+			return await this.invokeWithOptionalTimeout(instance, input, startedAt, invocationOptions.onEvent);
 		} catch (error) {
 			return failedResult(
 				input,
@@ -328,11 +331,17 @@ export class RunSubAgentRunner {
 		instance: PiSubAgentInstance,
 		input: RunSubAgentInput,
 		startedAt = Date.now(),
+		onEvent?: SubAgentEventObserver,
 	): Promise<SubAgentResult> {
 		const task = { input: input.task, invocationId: input.invocationId };
 		const messageCountBefore = instance.session.state.messages.length;
+		const unsubscribe = onEvent ? this.subscribeToSubAgentEvents(instance, input, onEvent) : undefined;
 		if (!input.timeoutMs || input.timeoutMs <= 0) {
-			return await instance.invoke(task);
+			try {
+				return await instance.invoke(task);
+			} finally {
+				unsubscribe?.();
+			}
 		}
 		let timeout: ReturnType<typeof setTimeout> | undefined;
 		const timeoutPromise = new Promise<SubAgentResult>((resolve) => {
@@ -357,7 +366,24 @@ export class RunSubAgentRunner {
 			return await Promise.race([instance.invoke(task), timeoutPromise]);
 		} finally {
 			if (timeout) clearTimeout(timeout);
+			unsubscribe?.();
 		}
+	}
+
+	private subscribeToSubAgentEvents(
+		instance: PiSubAgentInstance,
+		input: RunSubAgentInput,
+		onEvent: SubAgentEventObserver,
+	): () => void {
+		return instance.subscribe((event) => {
+			observeSubAgentEventBestEffort(onEvent, {
+				source: "subagent",
+				agentId: instance.definition.id,
+				sessionId: instance.session.sessionId,
+				invocationId: input.invocationId,
+				event,
+			});
+		});
 	}
 }
 
@@ -413,4 +439,12 @@ function failedResult(
 		messageCountBefore: 0,
 		messageCountAfter: 0,
 	};
+}
+
+function observeSubAgentEventBestEffort(onEvent: SubAgentEventObserver, envelope: SubAgentEventEnvelope): void {
+	try {
+		Promise.resolve(onEvent(envelope)).catch(() => undefined);
+	} catch {
+		// Observability callbacks must never affect sub-agent execution.
+	}
 }

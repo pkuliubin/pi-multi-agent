@@ -122,6 +122,12 @@ export class MockAgentSession implements AgentSessionLike {
 		};
 	}
 
+	emit(event: Parameters<AgentSessionLikeEventListener>[0]): void {
+		for (const listener of this.listeners) {
+			void listener(event);
+		}
+	}
+
 	async dispose(): Promise<void> {
 		this.disposeCalls += 1;
 	}

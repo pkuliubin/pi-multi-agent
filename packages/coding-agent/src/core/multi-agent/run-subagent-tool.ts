@@ -1,15 +1,18 @@
 import path from "node:path";
 import {
+	type CompactSubAgentEvent,
 	defaultRoleSessionIndexPath,
 	defaultSharedStateManifestPath,
 	FileRoleSessionIndex,
 	FileSharedStateManifest,
 	type PiSubAgentDefinition,
 	type RunSubAgentInput,
+	type RunSubAgentProgressSummary,
 	RunSubAgentRunner,
 	type RunSubAgentToolResult,
 	type SharedStateManifest,
 	type SubAgentAccessSurfaceDefinition,
+	type SubAgentEventEnvelope,
 	SubAgentRegistry,
 } from "@earendil-works/pi-multi-agent";
 import { Text } from "@earendil-works/pi-tui";
@@ -52,6 +55,7 @@ export interface RunSubAgentToolDetails extends RunSubAgentToolResult {}
 interface RunSubAgentToolDetailsWithRoot extends RunSubAgentToolResult {
 	sharedStateRoot: string;
 	definitionSource: "file" | "demo" | "custom";
+	progress: RunSubAgentProgressSummary;
 }
 
 export function createDemoSubAgentDefinitions(): PiSubAgentDefinition[] {
@@ -124,6 +128,169 @@ function defaultSharedStateRootForTool(options: CreateRunSubAgentToolOptions): s
 	return defaultSharedStateRoot(options.cwd, options.mainSessionId);
 }
 
+function truncatePreview(text: string, maxLength = 160): string {
+	return text.length <= maxLength ? text : `${text.slice(0, maxLength - 3)}...`;
+}
+
+function isAssistantTextMessage(
+	value: unknown,
+): value is { role: "assistant"; content: Array<{ type: string; text?: string }> } {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		"role" in value &&
+		(value as { role: unknown }).role === "assistant" &&
+		"content" in value &&
+		Array.isArray((value as { content: unknown }).content)
+	);
+}
+
+function previewTextFromEnvelope(envelope: SubAgentEventEnvelope): string | undefined {
+	const event = envelope.event;
+	if (event.type !== "message_end") return undefined;
+	const message = event.message;
+	if (!isAssistantTextMessage(message)) return undefined;
+	const text = message.content
+		.filter((item): item is { type: "text"; text: string } => item.type === "text" && typeof item.text === "string")
+		.map((item) => item.text)
+		.join("\n")
+		.trim();
+	return text ? truncatePreview(text) : undefined;
+}
+
+function truncateSummary(text: string, maxLength: number): string {
+	return text.length <= maxLength ? text : `${text.slice(0, maxLength - 3)}...`;
+}
+
+function summarizeToolArgs(event: SubAgentEventEnvelope["event"]): string | undefined {
+	if (event.type !== "tool_execution_start" && event.type !== "tool_execution_end") return undefined;
+	const args = event.args;
+	if (!args || typeof args !== "object") return undefined;
+	const candidate = args as Record<string, unknown>;
+	const parts: string[] = [];
+	if (typeof candidate.path === "string") parts.push(`path=${candidate.path}`);
+	if (typeof candidate.pattern === "string") parts.push(`pattern=${candidate.pattern}`);
+	if (typeof candidate.content === "string") parts.push(`content=${candidate.content.length} chars`);
+	if (Array.isArray(candidate.edits)) parts.push(`edits=${candidate.edits.length}`);
+	if (typeof candidate.limit === "number") parts.push(`limit=${candidate.limit}`);
+	if (parts.length === 0) return undefined;
+	return truncateSummary(parts.join(" "), 100);
+}
+
+function summarizeToolResult(event: SubAgentEventEnvelope["event"]): string | undefined {
+	if (event.type !== "tool_execution_end") return undefined;
+	const result = event.result as { content?: Array<{ type: string; text?: string }> } | undefined;
+	const text = result?.content
+		?.filter((content) => content.type === "text")
+		.map((content) => content.text ?? "")
+		.join("\n")
+		.trim();
+	if (!text) return event.isError ? "error" : undefined;
+	return truncateSummary(text, 100);
+}
+
+function compactEventFromEnvelope(envelope: SubAgentEventEnvelope): CompactSubAgentEvent | undefined {
+	const event = envelope.event;
+	const timestamp = Date.now();
+	if (event.type === "agent_start" || event.type === "agent_end") {
+		return { type: event.type, timestamp };
+	}
+	if (event.type === "tool_execution_start" || event.type === "tool_execution_end") {
+		return {
+			type: event.type,
+			toolName: String(event.toolName),
+			toolCallId: String(event.toolCallId),
+			timestamp,
+			argsSummary: summarizeToolArgs(event),
+			resultSummary: summarizeToolResult(event),
+			isError: event.type === "tool_execution_end" ? Boolean(event.isError) || undefined : undefined,
+		};
+	}
+	if (event.type === "message_end") {
+		const preview = previewTextFromEnvelope(envelope);
+		if (!preview) return undefined;
+		return { type: "message_end", preview, timestamp };
+	}
+	return undefined;
+}
+
+function initialProgressSummary(): RunSubAgentProgressSummary {
+	return {
+		currentPhase: "starting",
+		completedTools: [],
+		eventCount: 0,
+		recentEvents: [],
+	};
+}
+
+function reduceProgressSummary(
+	previous: RunSubAgentProgressSummary,
+	envelope: SubAgentEventEnvelope,
+): RunSubAgentProgressSummary {
+	const compact = compactEventFromEnvelope(envelope);
+	let currentPhase = previous.currentPhase;
+	let activeTool = previous.activeTool;
+	let completedTools = previous.completedTools;
+	let lastAssistantPreview = previous.lastAssistantPreview;
+	let eventCount = previous.eventCount;
+	let recentEvents = previous.recentEvents;
+	if (!compact) {
+		return previous;
+	}
+	eventCount += 1;
+	recentEvents = [...previous.recentEvents, compact].slice(-8);
+	if (compact.type === "tool_execution_start") {
+		currentPhase = "running";
+		activeTool = { toolName: compact.toolName, toolCallId: compact.toolCallId };
+	}
+	if (compact.type === "tool_execution_end") {
+		currentPhase = "running";
+		completedTools = [
+			...previous.completedTools,
+			{ toolName: compact.toolName, toolCallId: compact.toolCallId, isError: compact.isError },
+		];
+		if (activeTool?.toolCallId === compact.toolCallId) activeTool = undefined;
+	}
+	if (compact.type === "message_end") {
+		currentPhase = "running";
+		lastAssistantPreview = compact.preview;
+	}
+	return {
+		currentPhase,
+		activeTool,
+		completedTools,
+		lastAssistantPreview,
+		eventCount,
+		recentEvents,
+	};
+}
+
+function finalProgressSummary(
+	progress: RunSubAgentProgressSummary,
+	result: RunSubAgentToolResult["result"],
+): RunSubAgentProgressSummary {
+	return {
+		...progress,
+		currentPhase: result.status,
+		activeTool: undefined,
+		lastAssistantPreview: result.finalText ? truncatePreview(result.finalText) : progress.lastAssistantPreview,
+	};
+}
+
+function busyProgressSummary(result: RunSubAgentToolResult["result"]): RunSubAgentProgressSummary {
+	return {
+		currentPhase: "failed",
+		completedTools: [],
+		lastAssistantPreview: result.errorMessage ? truncatePreview(result.errorMessage) : undefined,
+		eventCount: 0,
+		recentEvents: [],
+	};
+}
+
+function progressSnapshotChanged(a: RunSubAgentProgressSummary, b: RunSubAgentProgressSummary): boolean {
+	return JSON.stringify(a) !== JSON.stringify(b);
+}
+
 export function createRunSubAgentTool(options: CreateRunSubAgentToolOptions): ToolDefinition {
 	const sharedStateRoot = options.sharedStateRoot ?? defaultSharedStateRootForTool(options);
 	const manifest = options.manifest ?? new FileSharedStateManifest(defaultSharedStateManifestPath(sharedStateRoot));
@@ -148,7 +315,7 @@ export function createRunSubAgentTool(options: CreateRunSubAgentToolOptions): To
 		promptGuidelines: buildPromptGuidelines(options.definitions),
 		parameters: runSubAgentSchema,
 		executionMode: "parallel",
-		async execute(_toolCallId, params: RunSubAgentToolInput, signal, _onUpdate, ctx) {
+		async execute(_toolCallId, params: RunSubAgentToolInput, signal, onUpdate, ctx) {
 			if (signal?.aborted) throw new Error("Sub-agent invocation aborted");
 			if (!ctx.model) throw new Error("Cannot run sub-agent without an active model");
 			runner ??= new RunSubAgentRunner({
@@ -167,17 +334,42 @@ export function createRunSubAgentTool(options: CreateRunSubAgentToolOptions): To
 				createAccessSurfaceTools: ({ definition, accessSurface }) =>
 					createToolsForAccessSurface(sharedStateRoot, manifest, definition, accessSurface),
 			});
-			const result = await runner.run({
-				...(params as RunSubAgentInput),
-				model: ctx.model,
-				thinkingLevel: ctx.model.reasoning ? undefined : "off",
-			});
+			let progress = initialProgressSummary();
+			let lastEmitted = progress;
+			const emitProgress = () => {
+				onUpdate?.({
+					content: [{ type: "text", text: formatRunSubAgentProgress(progress) }],
+					details: { progress },
+				});
+				lastEmitted = progress;
+			};
+			const result = await runner.run(
+				{
+					...(params as RunSubAgentInput),
+					model: ctx.model,
+					thinkingLevel: ctx.model.reasoning ? undefined : "off",
+				},
+				{
+					onEvent: (envelope) => {
+						const next = reduceProgressSummary(progress, envelope);
+						if (next === progress) return;
+						progress = next;
+						if (progressSnapshotChanged(progress, lastEmitted)) emitProgress();
+					},
+				},
+			);
+			progress =
+				result.errorCode === "SUB_AGENT_BUSY"
+					? busyProgressSummary(result)
+					: finalProgressSummary(progress, result);
+			if (progressSnapshotChanged(progress, lastEmitted)) emitProgress();
 			return {
 				content: [{ type: "text", text: formatResult(result, sharedStateRoot, definitionSource) }],
 				details: {
 					result,
 					sharedStateRoot,
 					definitionSource,
+					progress,
 				} satisfies RunSubAgentToolDetailsWithRoot,
 			};
 		},
@@ -279,6 +471,34 @@ function formatRunSubAgentCall(args: RunSubAgentToolInput | undefined): string {
 	const task = typeof args?.task === "string" ? args.task : "[invalid task]";
 	const trimmed = task.length > 72 ? `${task.slice(0, 69)}...` : task;
 	return `run_subagent ${agentId}: ${trimmed}`;
+}
+
+function formatRunSubAgentProgress(progress: RunSubAgentProgressSummary): string {
+	const lines = [
+		`phase: ${progress.currentPhase}`,
+		`events: ${progress.eventCount}`,
+		`completedTools: ${progress.completedTools.length}`,
+	];
+	if (progress.activeTool) {
+		lines.push(`activeTool: ${progress.activeTool.toolName} (${progress.activeTool.toolCallId})`);
+	}
+	if (progress.lastAssistantPreview) {
+		lines.push(`assistant: ${progress.lastAssistantPreview}`);
+	}
+	for (const event of progress.recentEvents) {
+		if (event.type === "tool_execution_start" || event.type === "tool_execution_end") {
+			let line = `${event.type}: ${event.toolName}`;
+			if (event.argsSummary) line += ` — ${event.argsSummary}`;
+			if (event.resultSummary) line += ` => ${event.resultSummary}`;
+			if (event.isError) line += " error";
+			lines.push(line);
+		} else if (event.type === "message_end") {
+			lines.push(`message_end: ${event.preview}`);
+		} else {
+			lines.push(event.type);
+		}
+	}
+	return lines.join("\n");
 }
 
 function formatRunSubAgentResult(

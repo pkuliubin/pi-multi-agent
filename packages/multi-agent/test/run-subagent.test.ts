@@ -440,4 +440,167 @@ describe("RunSubAgentRunner", () => {
 
 		expect(factory.created[0]?.capabilities?.tools).toEqual([tool]);
 	});
+
+	it("forwards sub-agent events to observer envelopes", async () => {
+		const factory = new MockSessionFactory();
+		factory.createHandler = (_input, session) => {
+			session.promptHandler = () => {
+				session.emit({ type: "agent_start" });
+				session.emit({
+					type: "tool_execution_start",
+					toolName: "shared_state.read",
+					toolCallId: "call-1",
+					args: {},
+				});
+				session.emit({
+					type: "tool_execution_end",
+					toolName: "shared_state.read",
+					toolCallId: "call-1",
+					args: {},
+					result: {},
+					isError: false,
+				});
+				session.emit({ type: "message_end", message: createAssistantMessage("done") });
+				session.emit({ type: "agent_end" });
+				session.state.messages = [...session.state.messages, createAssistantMessage("done")];
+			};
+		};
+		const runner = new RunSubAgentRunner({
+			registry: registryWith({ id: "worker", statePolicy: "session" }),
+			sessionFactory: factory,
+			cwd: "/tmp",
+		});
+		const events: Array<{ agentId: string; sessionId: string; invocationId?: string; type: string }> = [];
+
+		await runner.run(
+			{ agentId: "worker", task: "hello", invocationId: "inv-1" },
+			{
+				onEvent: (envelope) => {
+					events.push({
+						agentId: envelope.agentId,
+						sessionId: envelope.sessionId,
+						invocationId: envelope.invocationId,
+						type: envelope.event.type,
+					});
+				},
+			},
+		);
+
+		expect(events.map((event) => event.type)).toEqual([
+			"agent_start",
+			"tool_execution_start",
+			"tool_execution_end",
+			"message_end",
+			"agent_end",
+		]);
+		expect(new Set(events.map((event) => event.agentId))).toEqual(new Set(["worker"]));
+		expect(new Set(events.map((event) => event.sessionId))).toEqual(new Set(["session-1"]));
+		expect(new Set(events.map((event) => event.invocationId))).toEqual(new Set(["inv-1"]));
+	});
+
+	it("isolates observer failures from final result", async () => {
+		const factory = new MockSessionFactory();
+		factory.createHandler = (_input, session) => {
+			session.promptHandler = () => {
+				session.emit({ type: "agent_start" });
+				session.state.messages = [...session.state.messages, createAssistantMessage("done")];
+			};
+		};
+		const runner = new RunSubAgentRunner({
+			registry: registryWith({ id: "worker", statePolicy: "session" }),
+			sessionFactory: factory,
+			cwd: "/tmp",
+		});
+
+		const syncResult = await runner.run(
+			{ agentId: "worker", task: "hello" },
+			{
+				onEvent: () => {
+					throw new Error("observer failed");
+				},
+			},
+		);
+		expect(syncResult.status).toBe("completed");
+
+		const asyncResult = await runner.run(
+			{ agentId: "worker", task: "hello again" },
+			{
+				onEvent: async () => {
+					throw new Error("observer async failed");
+				},
+			},
+		);
+		expect(asyncResult.status).toBe("completed");
+	});
+
+	it("does not emit internal events for a busy invocation", async () => {
+		const deferred = createDeferred();
+		const factory = new MockSessionFactory();
+		factory.createHandler = (_input, session) => {
+			session.promptHandler = () => {
+				session.emit({ type: "agent_start" });
+				return deferred.promise;
+			};
+		};
+		const runner = new RunSubAgentRunner({
+			registry: registryWith({ id: "worker", statePolicy: "session" }),
+			sessionFactory: factory,
+			cwd: "/tmp",
+		});
+		const firstEvents: string[] = [];
+		const first = runner.run(
+			{ agentId: "worker", task: "one" },
+			{
+				onEvent: (envelope) => {
+					firstEvents.push(envelope.event.type);
+				},
+			},
+		);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		const busyEvents: string[] = [];
+		const second = await runner.run(
+			{ agentId: "worker", task: "two" },
+			{
+				onEvent: (envelope) => {
+					busyEvents.push(envelope.event.type);
+				},
+			},
+		);
+		deferred.resolve();
+		await first;
+
+		expect(second.errorCode).toBe("SUB_AGENT_BUSY");
+		expect(busyEvents).toEqual([]);
+		expect(firstEvents).toContain("agent_start");
+	});
+
+	it("unsubscribes observer after invocation completes", async () => {
+		let sessionRef: MockAgentSession | undefined;
+		const factory = new MockSessionFactory();
+		factory.createHandler = (_input, session) => {
+			sessionRef = session;
+			session.promptHandler = () => {
+				session.emit({ type: "agent_start" });
+				session.state.messages = [...session.state.messages, createAssistantMessage("done")];
+			};
+		};
+		const runner = new RunSubAgentRunner({
+			registry: registryWith({ id: "worker", statePolicy: "session" }),
+			sessionFactory: factory,
+			cwd: "/tmp",
+		});
+		const events: string[] = [];
+
+		await runner.run(
+			{ agentId: "worker", task: "hello" },
+			{
+				onEvent: (envelope) => {
+					events.push(envelope.event.type);
+				},
+			},
+		);
+		expect(sessionRef?.listenerCount()).toBe(0);
+		sessionRef?.emit({ type: "agent_start" });
+		expect(events).toEqual(["agent_start"]);
+	});
 });
