@@ -8,6 +8,12 @@ import type {
 export class MemorySharedStateManifest implements SharedStateManifest {
 	private readonly artifacts = new Map<string, SharedStateArtifact>();
 
+	constructor(artifacts: SharedStateArtifact[] = []) {
+		for (const artifact of artifacts) {
+			this.artifacts.set(artifact.path, cloneArtifact(artifact));
+		}
+	}
+
 	get(path: string): SharedStateArtifact | undefined {
 		const artifact = this.artifacts.get(path);
 		return artifact ? cloneArtifact(artifact) : undefined;

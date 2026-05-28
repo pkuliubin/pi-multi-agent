@@ -1318,6 +1318,7 @@ export class InteractiveMode {
 		const skillsResult = this.session.resourceLoader.getSkills();
 		const promptsResult = this.session.resourceLoader.getPrompts();
 		const themesResult = this.session.resourceLoader.getThemes();
+		const subAgentsResult = this.session.resourceLoader.getSubAgents();
 		const extensions =
 			options?.extensions ??
 			this.session.resourceLoader.getExtensions().extensions.map((extension) => ({
@@ -1343,6 +1344,11 @@ export class InteractiveMode {
 		for (const loadedTheme of themesResult.themes) {
 			if (loadedTheme.sourcePath && loadedTheme.sourceInfo) {
 				sourceInfos.set(loadedTheme.sourcePath, loadedTheme.sourceInfo);
+			}
+		}
+		for (const subAgent of subAgentsResult.agents) {
+			if (subAgent.sourceInfo) {
+				sourceInfos.set(subAgent.filePath, subAgent.sourceInfo);
 			}
 		}
 
@@ -1393,6 +1399,21 @@ export class InteractiveMode {
 				addLoadedSection("Prompts", promptCompactList, templateList);
 			}
 
+			const subAgents = subAgentsResult.agents;
+			if (subAgents.length > 0) {
+				const groups = this.buildScopeGroups(
+					subAgents.map((subAgent) => ({ path: subAgent.filePath, sourceInfo: subAgent.sourceInfo })),
+				);
+				const subAgentByPath = new Map(subAgents.map((subAgent) => [subAgent.filePath, subAgent]));
+				const subAgentList = this.formatScopeGroups(groups, {
+					formatPath: (item) => subAgentByPath.get(item.path)?.definition.id ?? this.formatDisplayPath(item.path),
+					formatPackagePath: (item) =>
+						subAgentByPath.get(item.path)?.definition.id ?? this.getShortPath(item.path, item.sourceInfo),
+				});
+				const subAgentCompactList = formatCompactList(subAgents.map((subAgent) => subAgent.definition.id));
+				addLoadedSection("Agents", subAgentCompactList, subAgentList);
+			}
+
 			if (extensions.length > 0) {
 				const groups = this.buildScopeGroups(extensions);
 				const extList = this.formatScopeGroups(groups, {
@@ -1433,6 +1454,13 @@ export class InteractiveMode {
 			if (skillDiagnostics.length > 0) {
 				const warningLines = this.formatDiagnostics(skillDiagnostics, sourceInfos);
 				this.chatContainer.addChild(new Text(`${theme.fg("warning", "[Skill conflicts]")}\n${warningLines}`, 0, 0));
+				this.chatContainer.addChild(new Spacer(1));
+			}
+
+			const subAgentDiagnostics = subAgentsResult.diagnostics;
+			if (subAgentDiagnostics.length > 0) {
+				const warningLines = this.formatDiagnostics(subAgentDiagnostics, sourceInfos);
+				this.chatContainer.addChild(new Text(`${theme.fg("warning", "[Agent issues]")}\n${warningLines}`, 0, 0));
 				this.chatContainer.addChild(new Spacer(1));
 			}
 

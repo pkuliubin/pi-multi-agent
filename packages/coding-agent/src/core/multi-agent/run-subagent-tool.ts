@@ -1,6 +1,9 @@
 import path from "node:path";
 import {
-	MemorySharedStateManifest,
+	defaultRoleSessionIndexPath,
+	defaultSharedStateManifestPath,
+	FileRoleSessionIndex,
+	FileSharedStateManifest,
 	type PiSubAgentDefinition,
 	type RunSubAgentInput,
 	RunSubAgentRunner,
@@ -13,6 +16,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
 import { defineTool, type ToolDefinition, type ToolRenderResultOptions } from "../extensions/types.ts";
 import { getTextOutput } from "../tools/render-utils.ts";
+import { CodingSubAgentLifecycleStore } from "./role-session-store.ts";
 import { CodingAgentSessionFactory } from "./session-factory.ts";
 import { createSharedStateTools } from "./shared-state-tools.ts";
 
@@ -34,12 +38,21 @@ export interface CreateRunSubAgentToolOptions {
 	cwd: string;
 	agentDir?: string;
 	definitions: PiSubAgentDefinition[];
-	sharedStateRoot: string;
+	sharedStateRoot?: string;
+	definitionSource?: "file" | "demo" | "custom";
 	manifest?: SharedStateManifest;
+	mainSessionId?: string;
+	sessionDir?: string;
+	roleSessionIndexPath?: string;
 	maxConcurrentSubAgents?: number;
 }
 
 export interface RunSubAgentToolDetails extends RunSubAgentToolResult {}
+
+interface RunSubAgentToolDetailsWithRoot extends RunSubAgentToolResult {
+	sharedStateRoot: string;
+	definitionSource: "file" | "demo" | "custom";
+}
 
 export function createDemoSubAgentDefinitions(): PiSubAgentDefinition[] {
 	return [
@@ -104,11 +117,27 @@ export function defaultSharedStateRoot(cwd: string, sessionId: string): string {
 	return path.join(cwd, ".pi", "multi-agent", "shared-state", sessionId);
 }
 
+function defaultSharedStateRootForTool(options: CreateRunSubAgentToolOptions): string {
+	if (!options.mainSessionId) {
+		throw new Error("sharedStateRoot is required when mainSessionId is not provided");
+	}
+	return defaultSharedStateRoot(options.cwd, options.mainSessionId);
+}
+
 export function createRunSubAgentTool(options: CreateRunSubAgentToolOptions): ToolDefinition {
-	const manifest = options.manifest ?? new MemorySharedStateManifest();
+	const sharedStateRoot = options.sharedStateRoot ?? defaultSharedStateRootForTool(options);
+	const manifest = options.manifest ?? new FileSharedStateManifest(defaultSharedStateManifestPath(sharedStateRoot));
 	const registry = new SubAgentRegistry();
+	const definitionSource = options.definitionSource ?? inferDefinitionSource(options.definitions);
 	for (const definition of options.definitions) registry.register(definition);
 	let runner: RunSubAgentRunner | undefined;
+	const lifecycleStore = options.mainSessionId
+		? new CodingSubAgentLifecycleStore({
+				index: new FileRoleSessionIndex(options.roleSessionIndexPath ?? defaultRoleSessionIndexPath(options.cwd)),
+				cwd: options.cwd,
+				sessionDir: options.sessionDir,
+			})
+		: undefined;
 
 	return defineTool({
 		name: "run_subagent",
@@ -116,13 +145,7 @@ export function createRunSubAgentTool(options: CreateRunSubAgentToolOptions): To
 		description:
 			"Run a registered Pi sub-agent. Sub-agents have isolated sessions and only explicitly granted capabilities such as shared_state tools. For multi-round Shared State work, call sub-agents in explicit rounds and require them to write concise artifacts to their assigned paths.",
 		promptSnippet: "Run registered sub-agents with isolated sessions and explicit Shared State access",
-		promptGuidelines: [
-			"Use run_subagent when the user asks to delegate work to pm-agent, engineering-agent, synthesis-agent, or another registered sub-agent.",
-			"For Shared State collaboration, do not ask sub-agents for long prose in the tool result; ask them to write concise artifacts and return the path they changed.",
-			"For the demo agents, use this order: round 1 pm-agent writes prd/pm.md and engineering-agent writes analysis/engineering.md; round 2 pm-agent reads analysis/engineering.md and updates prd/pm.md, then engineering-agent reads prd/pm.md and updates analysis/engineering.md; final synthesis-agent reads both and writes summary/final.md.",
-			"Do not run a dependent sub-agent before the artifact it needs exists. If the user asks for multiple rounds, wait for each round's run_subagent results before starting the next dependent round.",
-			"Always require concise artifacts, roughly 8-15 lines, unless the user explicitly asks for a long document.",
-		],
+		promptGuidelines: buildPromptGuidelines(options.definitions),
 		parameters: runSubAgentSchema,
 		executionMode: "parallel",
 		async execute(_toolCallId, params: RunSubAgentToolInput, signal, _onUpdate, ctx) {
@@ -130,19 +153,33 @@ export function createRunSubAgentTool(options: CreateRunSubAgentToolOptions): To
 			if (!ctx.model) throw new Error("Cannot run sub-agent without an active model");
 			runner ??= new RunSubAgentRunner({
 				registry,
-				sessionFactory: new CodingAgentSessionFactory({ modelRegistry: ctx.modelRegistry }),
+				sessionFactory: new CodingAgentSessionFactory({
+					modelRegistry: ctx.modelRegistry,
+					sessionDir: options.sessionDir,
+					resolveRoleSessionBinding: (input) => lifecycleStore?.resolveBinding(input),
+				}),
 				cwd: options.cwd,
 				agentDir: options.agentDir,
 				maxConcurrentSubAgents: options.maxConcurrentSubAgents,
+				mainSessionId: options.mainSessionId,
+				definitionSource,
+				lifecycleStore,
 				createAccessSurfaceTools: ({ definition, accessSurface }) =>
-					createToolsForAccessSurface(options.sharedStateRoot, manifest, definition, accessSurface),
+					createToolsForAccessSurface(sharedStateRoot, manifest, definition, accessSurface),
 			});
 			const result = await runner.run({
 				...(params as RunSubAgentInput),
 				model: ctx.model,
 				thinkingLevel: ctx.model.reasoning ? undefined : "off",
 			});
-			return { content: [{ type: "text", text: formatResult(result) }], details: { result } };
+			return {
+				content: [{ type: "text", text: formatResult(result, sharedStateRoot, definitionSource) }],
+				details: {
+					result,
+					sharedStateRoot,
+					definitionSource,
+				} satisfies RunSubAgentToolDetailsWithRoot,
+			};
 		},
 		renderCall(args, _theme, context) {
 			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
@@ -157,6 +194,47 @@ export function createRunSubAgentTool(options: CreateRunSubAgentToolOptions): To
 	});
 }
 
+function inferDefinitionSource(definitions: PiSubAgentDefinition[]): "file" | "demo" | "custom" {
+	if (
+		definitions.length > 0 &&
+		definitions.every((definition) => typeof definition.metadata?.sourcePath === "string")
+	) {
+		return "file";
+	}
+	const ids = new Set(definitions.map((definition) => definition.id));
+	if (ids.size === 3 && ids.has("pm-agent") && ids.has("engineering-agent") && ids.has("synthesis-agent")) {
+		return "demo";
+	}
+	return "custom";
+}
+
+function buildPromptGuidelines(definitions: PiSubAgentDefinition[]): string[] {
+	const agentList = definitions
+		.map((definition) => {
+			const description = definition.description ? ` — ${definition.description}` : "";
+			return `${definition.id}${description}`;
+		})
+		.join("; ");
+	const hasDemoWorkflow = ["pm-agent", "engineering-agent", "synthesis-agent"].every((id) =>
+		definitions.some((definition) => definition.id === id),
+	);
+	const guidelines = [
+		`Use run_subagent when the user asks to delegate work to a registered sub-agent. Registered sub-agents: ${agentList || "none"}.`,
+		"For Shared State collaboration, do not ask sub-agents for long prose in the tool result; ask them to write concise artifacts and return the path they changed.",
+		"Shared State paths such as prd/pm.md, analysis/engineering.md, and summary/final.md are logical artifact paths, not repository-relative paths. Do not use ordinary read/bash tools on those logical paths unless you first combine them with the sharedStateRoot shown in the run_subagent result.",
+		"Do not run a dependent sub-agent before the artifact it needs exists. If the user asks for multiple rounds, wait for each round's run_subagent results before starting the next dependent round.",
+		"Always require concise artifacts, roughly 8-15 lines, unless the user explicitly asks for a long document.",
+	];
+	if (hasDemoWorkflow) {
+		guidelines.splice(
+			3,
+			0,
+			"For the pm/engineering/synthesis workflow, use this order: round 1 pm-agent writes prd/pm.md and engineering-agent writes analysis/engineering.md; round 2 pm-agent reads analysis/engineering.md and updates prd/pm.md, then engineering-agent reads prd/pm.md and updates analysis/engineering.md; final synthesis-agent reads both and writes summary/final.md.",
+		);
+	}
+	return guidelines;
+}
+
 function createToolsForAccessSurface(
 	root: string,
 	manifest: SharedStateManifest,
@@ -169,12 +247,19 @@ function createToolsForAccessSurface(
 	return createSharedStateTools({ root, agentId: definition.id, grants: accessSurface.grants, manifest });
 }
 
-function formatResult(result: RunSubAgentToolResult["result"]): string {
+function formatResult(
+	result: RunSubAgentToolResult["result"],
+	sharedStateRoot: string,
+	definitionSource: "file" | "demo" | "custom",
+): string {
 	const durationMs = Math.max(0, result.endedAt - result.startedAt);
 	const header = [
 		`status: ${result.status}`,
 		`agentId: ${result.agentId}`,
 		`sessionId: ${result.sessionId}`,
+		`sharedStateRoot: ${sharedStateRoot}`,
+		`definitionSource: ${definitionSource}`,
+		...(result.errorCode ? [`errorCode: ${result.errorCode}`] : []),
 		`startedAt: ${formatTimestamp(result.startedAt)}`,
 		`endedAt: ${formatTimestamp(result.endedAt)}`,
 		`durationMs: ${durationMs}`,

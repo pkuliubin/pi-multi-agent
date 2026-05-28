@@ -1,4 +1,8 @@
-import type { AgentSessionFactory, CreateSubAgentSessionInput } from "@earendil-works/pi-multi-agent";
+import type {
+	AgentSessionFactory,
+	CreateSubAgentSessionInput,
+	RoleSessionBinding,
+} from "@earendil-works/pi-multi-agent";
 import type { ToolDefinition } from "../extensions/types.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import { createAgentSession } from "../sdk.ts";
@@ -8,6 +12,9 @@ import { RestrictedSubAgentResourceLoader } from "./restricted-resource-loader.t
 
 export interface CodingAgentSessionFactoryOptions {
 	modelRegistry?: ModelRegistry;
+	sessionDir?: string;
+	resolveSessionManager?: (input: CreateSubAgentSessionInput) => SessionManager;
+	resolveRoleSessionBinding?: (input: CreateSubAgentSessionInput) => RoleSessionBinding | undefined;
 }
 
 function isToolDefinition(value: unknown): value is ToolDefinition {
@@ -73,9 +80,15 @@ function getCapabilityTools(input: CreateSubAgentSessionInput): ToolDefinition[]
 
 export class CodingAgentSessionFactory implements AgentSessionFactory {
 	private readonly modelRegistry?: ModelRegistry;
+	private readonly sessionDir?: string;
+	private readonly resolveSessionManager?: (input: CreateSubAgentSessionInput) => SessionManager;
+	private readonly resolveRoleSessionBinding?: (input: CreateSubAgentSessionInput) => RoleSessionBinding | undefined;
 
 	constructor(options: CodingAgentSessionFactoryOptions = {}) {
 		this.modelRegistry = options.modelRegistry;
+		this.sessionDir = options.sessionDir;
+		this.resolveSessionManager = options.resolveSessionManager;
+		this.resolveRoleSessionBinding = options.resolveRoleSessionBinding;
 	}
 
 	async create(input: CreateSubAgentSessionInput): Promise<AdaptedAgentSessionLike> {
@@ -89,7 +102,7 @@ export class CodingAgentSessionFactory implements AgentSessionFactory {
 			model: input.model,
 			thinkingLevel: input.thinkingLevel,
 			modelRegistry: this.modelRegistry,
-			sessionManager: SessionManager.inMemory(input.cwd),
+			sessionManager: this.createSessionManager(input),
 			resourceLoader: new RestrictedSubAgentResourceLoader({ systemPrompt: input.definition.systemPrompt }),
 			customTools,
 			noTools: "all",
@@ -97,6 +110,16 @@ export class CodingAgentSessionFactory implements AgentSessionFactory {
 		});
 
 		return adaptAgentSession(session);
+	}
+
+	private createSessionManager(input: CreateSubAgentSessionInput): SessionManager {
+		if (this.resolveSessionManager) return this.resolveSessionManager(input);
+		if (input.sessionPolicy === "session" && input.roleSession?.mainSessionId) {
+			const binding = this.resolveRoleSessionBinding?.(input);
+			if (binding) return SessionManager.open(binding.subAgentSessionFile, this.sessionDir, input.cwd);
+			return SessionManager.create(input.cwd, this.sessionDir);
+		}
+		return SessionManager.inMemory(input.cwd);
 	}
 }
 

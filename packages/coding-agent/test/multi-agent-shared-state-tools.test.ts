@@ -192,6 +192,60 @@ describe("shared_state tools", () => {
 		expect(result.content[0].text).not.toContain("secret/b.md");
 	});
 
+	it("lists all manifest artifacts by default with wildcard list grant", async () => {
+		const root = createTempRoot();
+		const manifest = new MemorySharedStateManifest();
+		const owner = toolSet({
+			root,
+			manifest,
+			agentId: "owner",
+			grants: [
+				{ space: "prd", permissions: ["list", "read", "grep", "write", "edit"] },
+				{ space: "analysis", permissions: ["list", "read", "grep", "write", "edit"] },
+			],
+		});
+		await executeTool(owner.tools["shared_state.write"], { path: "prd/a.md", content: "a" });
+		await executeTool(owner.tools["shared_state.write"], { path: "analysis/b.md", content: "b" });
+		const reader = toolSet({
+			root,
+			manifest,
+			agentId: "reader",
+			grants: [{ space: "*", permissions: ["list"] }],
+		});
+
+		const result = await executeTool(reader.tools["shared_state.list"], {});
+
+		expect(result.content[0].text).toContain("prd/a.md");
+		expect(result.content[0].text).toContain("analysis/b.md");
+	});
+
+	it("greps manifest spaces by default with wildcard grep grant", async () => {
+		const root = createTempRoot();
+		const manifest = new MemorySharedStateManifest();
+		const owner = toolSet({
+			root,
+			manifest,
+			agentId: "owner",
+			grants: [
+				{ space: "prd", permissions: ["list", "read", "grep", "write", "edit"] },
+				{ space: "analysis", permissions: ["list", "read", "grep", "write", "edit"] },
+			],
+		});
+		await executeTool(owner.tools["shared_state.write"], { path: "prd/a.md", content: "needle in prd" });
+		await executeTool(owner.tools["shared_state.write"], { path: "analysis/b.md", content: "needle in analysis" });
+		const reader = toolSet({
+			root,
+			manifest,
+			agentId: "reader",
+			grants: [{ space: "*", permissions: ["grep"] }],
+		});
+
+		const result = await executeTool(reader.tools["shared_state.grep"], { pattern: "needle", literal: true });
+
+		expect(result.content[0].text).toContain("a.md");
+		expect(result.content[0].text).toContain("b.md");
+	});
+
 	it("rejects unauthorized spaces and path escapes", async () => {
 		const { tools } = toolSet({ grants: [{ space: "prd", permissions: ["read", "write"] }] });
 

@@ -11,6 +11,10 @@ import { canonicalizePath, isLocalPath, resolvePath } from "../utils/paths.ts";
 import { createEventBus, type EventBus } from "./event-bus.ts";
 import { createExtensionRuntime, loadExtensionFromFactory, loadExtensions } from "./extensions/loader.ts";
 import type { Extension, ExtensionFactory, ExtensionRuntime, LoadExtensionsResult } from "./extensions/types.ts";
+import {
+	loadSubAgentDefinitionsFromPaths,
+	type SubAgentDefinitionResource,
+} from "./multi-agent/sub-agent-definition-loader.ts";
 import { DefaultPackageManager, type PathMetadata } from "./package-manager.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import { loadPromptTemplates } from "./prompt-templates.ts";
@@ -23,6 +27,7 @@ export interface ResourceExtensionPaths {
 	skillPaths?: Array<{ path: string; metadata: PathMetadata }>;
 	promptPaths?: Array<{ path: string; metadata: PathMetadata }>;
 	themePaths?: Array<{ path: string; metadata: PathMetadata }>;
+	agentPaths?: Array<{ path: string; metadata: PathMetadata }>;
 }
 
 export interface ResourceLoader {
@@ -30,6 +35,7 @@ export interface ResourceLoader {
 	getSkills(): { skills: Skill[]; diagnostics: ResourceDiagnostic[] };
 	getPrompts(): { prompts: PromptTemplate[]; diagnostics: ResourceDiagnostic[] };
 	getThemes(): { themes: Theme[]; diagnostics: ResourceDiagnostic[] };
+	getSubAgents(): { agents: SubAgentDefinitionResource[]; diagnostics: ResourceDiagnostic[] };
 	getAgentsFiles(): { agentsFiles: Array<{ path: string; content: string }> };
 	getSystemPrompt(): string | undefined;
 	getAppendSystemPrompt(): string[];
@@ -121,6 +127,7 @@ export interface DefaultResourceLoaderOptions {
 	additionalSkillPaths?: string[];
 	additionalPromptTemplatePaths?: string[];
 	additionalThemePaths?: string[];
+	additionalAgentPaths?: string[];
 	extensionFactories?: ExtensionFactory[];
 	noExtensions?: boolean;
 	noSkills?: boolean;
@@ -142,6 +149,10 @@ export interface DefaultResourceLoaderOptions {
 		themes: Theme[];
 		diagnostics: ResourceDiagnostic[];
 	};
+	subAgentsOverride?: (base: { agents: SubAgentDefinitionResource[]; diagnostics: ResourceDiagnostic[] }) => {
+		agents: SubAgentDefinitionResource[];
+		diagnostics: ResourceDiagnostic[];
+	};
 	agentsFilesOverride?: (base: { agentsFiles: Array<{ path: string; content: string }> }) => {
 		agentsFiles: Array<{ path: string; content: string }>;
 	};
@@ -159,6 +170,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private additionalSkillPaths: string[];
 	private additionalPromptTemplatePaths: string[];
 	private additionalThemePaths: string[];
+	private additionalAgentPaths: string[];
 	private extensionFactories: ExtensionFactory[];
 	private noExtensions: boolean;
 	private noSkills: boolean;
@@ -180,6 +192,10 @@ export class DefaultResourceLoader implements ResourceLoader {
 		themes: Theme[];
 		diagnostics: ResourceDiagnostic[];
 	};
+	private subAgentsOverride?: (base: { agents: SubAgentDefinitionResource[]; diagnostics: ResourceDiagnostic[] }) => {
+		agents: SubAgentDefinitionResource[];
+		diagnostics: ResourceDiagnostic[];
+	};
 	private agentsFilesOverride?: (base: { agentsFiles: Array<{ path: string; content: string }> }) => {
 		agentsFiles: Array<{ path: string; content: string }>;
 	};
@@ -193,6 +209,8 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private promptDiagnostics: ResourceDiagnostic[];
 	private themes: Theme[];
 	private themeDiagnostics: ResourceDiagnostic[];
+	private subAgents: SubAgentDefinitionResource[];
+	private subAgentDiagnostics: ResourceDiagnostic[];
 	private agentsFiles: Array<{ path: string; content: string }>;
 	private systemPrompt?: string;
 	private appendSystemPrompt: string[];
@@ -200,8 +218,10 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private extensionSkillSourceInfos: Map<string, SourceInfo>;
 	private extensionPromptSourceInfos: Map<string, SourceInfo>;
 	private extensionThemeSourceInfos: Map<string, SourceInfo>;
+	private extensionAgentSourceInfos: Map<string, SourceInfo>;
 	private lastPromptPaths: string[];
 	private lastThemePaths: string[];
+	private lastAgentPaths: string[];
 
 	constructor(options: DefaultResourceLoaderOptions) {
 		this.cwd = resolvePath(options.cwd);
@@ -217,6 +237,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.additionalSkillPaths = options.additionalSkillPaths ?? [];
 		this.additionalPromptTemplatePaths = options.additionalPromptTemplatePaths ?? [];
 		this.additionalThemePaths = options.additionalThemePaths ?? [];
+		this.additionalAgentPaths = options.additionalAgentPaths ?? [];
 		this.extensionFactories = options.extensionFactories ?? [];
 		this.noExtensions = options.noExtensions ?? false;
 		this.noSkills = options.noSkills ?? false;
@@ -229,6 +250,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.skillsOverride = options.skillsOverride;
 		this.promptsOverride = options.promptsOverride;
 		this.themesOverride = options.themesOverride;
+		this.subAgentsOverride = options.subAgentsOverride;
 		this.agentsFilesOverride = options.agentsFilesOverride;
 		this.systemPromptOverride = options.systemPromptOverride;
 		this.appendSystemPromptOverride = options.appendSystemPromptOverride;
@@ -240,14 +262,18 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.promptDiagnostics = [];
 		this.themes = [];
 		this.themeDiagnostics = [];
+		this.subAgents = [];
+		this.subAgentDiagnostics = [];
 		this.agentsFiles = [];
 		this.appendSystemPrompt = [];
 		this.lastSkillPaths = [];
 		this.extensionSkillSourceInfos = new Map();
 		this.extensionPromptSourceInfos = new Map();
 		this.extensionThemeSourceInfos = new Map();
+		this.extensionAgentSourceInfos = new Map();
 		this.lastPromptPaths = [];
 		this.lastThemePaths = [];
+		this.lastAgentPaths = [];
 	}
 
 	getExtensions(): LoadExtensionsResult {
@@ -266,6 +292,10 @@ export class DefaultResourceLoader implements ResourceLoader {
 		return { themes: this.themes, diagnostics: this.themeDiagnostics };
 	}
 
+	getSubAgents(): { agents: SubAgentDefinitionResource[]; diagnostics: ResourceDiagnostic[] } {
+		return { agents: this.subAgents, diagnostics: this.subAgentDiagnostics };
+	}
+
 	getAgentsFiles(): { agentsFiles: Array<{ path: string; content: string }> } {
 		return { agentsFiles: this.agentsFiles };
 	}
@@ -282,6 +312,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		const skillPaths = this.normalizeExtensionPaths(paths.skillPaths ?? []);
 		const promptPaths = this.normalizeExtensionPaths(paths.promptPaths ?? []);
 		const themePaths = this.normalizeExtensionPaths(paths.themePaths ?? []);
+		const agentPaths = this.normalizeExtensionPaths(paths.agentPaths ?? []);
 
 		for (const entry of skillPaths) {
 			this.extensionSkillSourceInfos.set(entry.path, createSourceInfo(entry.path, entry.metadata));
@@ -291,6 +322,9 @@ export class DefaultResourceLoader implements ResourceLoader {
 		}
 		for (const entry of themePaths) {
 			this.extensionThemeSourceInfos.set(entry.path, createSourceInfo(entry.path, entry.metadata));
+		}
+		for (const entry of agentPaths) {
+			this.extensionAgentSourceInfos.set(entry.path, createSourceInfo(entry.path, entry.metadata));
 		}
 
 		if (skillPaths.length > 0) {
@@ -316,6 +350,14 @@ export class DefaultResourceLoader implements ResourceLoader {
 			);
 			this.updateThemesFromPaths(this.lastThemePaths);
 		}
+
+		if (agentPaths.length > 0) {
+			this.lastAgentPaths = this.mergePaths(
+				this.lastAgentPaths,
+				agentPaths.map((entry) => entry.path),
+			);
+			this.updateSubAgentsFromPaths(this.lastAgentPaths);
+		}
 	}
 
 	async reload(): Promise<void> {
@@ -329,6 +371,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.extensionSkillSourceInfos = new Map();
 		this.extensionPromptSourceInfos = new Map();
 		this.extensionThemeSourceInfos = new Map();
+		this.extensionAgentSourceInfos = new Map();
 
 		// Helper to extract enabled paths and store metadata
 		const getEnabledResources = (
@@ -349,6 +392,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		const enabledSkillResources = getEnabledResources(resolvedPaths.skills);
 		const enabledPrompts = getEnabledPaths(resolvedPaths.prompts);
 		const enabledThemes = getEnabledPaths(resolvedPaths.themes);
+		const enabledAgents = getEnabledPaths(resolvedPaths.agents);
 
 		const mapSkillPath = (resource: { path: string; metadata: PathMetadata }): string => {
 			if (resource.metadata.source !== "auto" && resource.metadata.origin !== "package") {
@@ -390,6 +434,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		const cliEnabledSkills = getEnabledPaths(cliExtensionPaths.skills);
 		const cliEnabledPrompts = getEnabledPaths(cliExtensionPaths.prompts);
 		const cliEnabledThemes = getEnabledPaths(cliExtensionPaths.themes);
+		const cliEnabledAgents = getEnabledPaths(cliExtensionPaths.agents);
 
 		const extensionPaths = this.noExtensions
 			? cliEnabledExtensions
@@ -462,6 +507,16 @@ export class DefaultResourceLoader implements ResourceLoader {
 			const resolved = this.resolveResourcePath(p);
 			if (!existsSync(resolved) && !this.themeDiagnostics.some((d) => d.path === resolved)) {
 				this.themeDiagnostics.push({ type: "error", message: "Theme path does not exist", path: resolved });
+			}
+		}
+
+		const agentPaths = this.mergePaths([...cliEnabledAgents, ...enabledAgents], this.additionalAgentPaths);
+		this.lastAgentPaths = agentPaths;
+		this.updateSubAgentsFromPaths(agentPaths, metadataByPath);
+		for (const p of this.additionalAgentPaths) {
+			const resolved = this.resolveResourcePath(p);
+			if (!existsSync(resolved) && !this.subAgentDiagnostics.some((d) => d.path === resolved)) {
+				this.subAgentDiagnostics.push({ type: "error", message: "Agent path does not exist", path: resolved });
 			}
 		}
 
@@ -569,6 +624,20 @@ export class DefaultResourceLoader implements ResourceLoader {
 			return theme;
 		});
 		this.themeDiagnostics = resolvedThemes.diagnostics;
+	}
+
+	private updateSubAgentsFromPaths(agentPaths: string[], metadataByPath?: Map<string, PathMetadata>): void {
+		const sourceInfoByPath = new Map<string, SourceInfo>();
+		for (const agentPath of agentPaths) {
+			const sourceInfo =
+				this.findSourceInfoForPath(agentPath, this.extensionAgentSourceInfos, metadataByPath) ??
+				this.getDefaultSourceInfoForPath(agentPath);
+			sourceInfoByPath.set(agentPath, sourceInfo);
+		}
+		const result = loadSubAgentDefinitionsFromPaths(agentPaths, sourceInfoByPath);
+		const resolved = this.subAgentsOverride ? this.subAgentsOverride(result) : result;
+		this.subAgents = resolved.agents;
+		this.subAgentDiagnostics = resolved.diagnostics;
 	}
 
 	private applyExtensionSourceInfo(extensions: Extension[], metadataByPath: Map<string, PathMetadata>): void {

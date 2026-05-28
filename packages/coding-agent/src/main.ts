@@ -30,10 +30,9 @@ import { KeybindingsManager } from "./core/keybindings.ts";
 import type { ModelRegistry } from "./core/model-registry.ts";
 import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.ts";
 import {
-	createDemoSubAgentDefinitions,
 	createDirectRunSubAgentTool,
 	createRunSubAgentTool,
-	defaultSharedStateRoot,
+	resolveRunSubAgentDefinitions,
 } from "./core/multi-agent/index.ts";
 import { restoreStdout, takeOverStdout } from "./core/output-guard.ts";
 import type { CreateAgentSessionOptions } from "./core/sdk.ts";
@@ -297,8 +296,6 @@ function buildSessionOptions(
 	hasExistingSession: boolean,
 	modelRegistry: ModelRegistry,
 	settingsManager: SettingsManager,
-	cwd: string,
-	agentDir: string,
 ): {
 	options: CreateAgentSessionOptions;
 	cliThinkingFromModel: boolean;
@@ -384,19 +381,7 @@ function buildSessionOptions(
 		options.tools = [...parsed.tools];
 	}
 
-	if (isTruthyEnvFlag(process.env.PI_MULTI_AGENT_RUN_SUBAGENT)) {
-		const sharedStateRoot =
-			process.env.PI_MULTI_AGENT_SHARED_STATE_ROOT ?? defaultSharedStateRoot(cwd, `cli-${process.pid}`);
-		options.customTools = [
-			...(options.customTools ?? []),
-			createRunSubAgentTool({
-				cwd,
-				agentDir,
-				definitions: createDemoSubAgentDefinitions(),
-				sharedStateRoot,
-			}),
-		];
-	} else if (isTruthyEnvFlag(process.env.PI_MULTI_AGENT_DIRECT_SUBAGENT)) {
+	if (isTruthyEnvFlag(process.env.PI_MULTI_AGENT_DIRECT_SUBAGENT)) {
 		options.customTools = [...(options.customTools ?? []), createDirectRunSubAgentTool()];
 	}
 
@@ -597,10 +582,33 @@ export async function main(args: string[], options?: MainOptions) {
 			sessionManager.buildSessionContext().messages.length > 0,
 			modelRegistry,
 			settingsManager,
-			cwd,
-			agentDir,
 		);
 		diagnostics.push(...sessionOptionDiagnostics);
+		diagnostics.push(
+			...resourceLoader.getSubAgents().diagnostics.map((diagnostic) => ({
+				type: diagnostic.type === "error" ? ("error" as const) : ("warning" as const),
+				message: diagnostic.path ? `${diagnostic.message}: ${diagnostic.path}` : diagnostic.message,
+			})),
+		);
+
+		if (isTruthyEnvFlag(process.env.PI_MULTI_AGENT_RUN_SUBAGENT)) {
+			const loadedSubAgents = resourceLoader.getSubAgents().agents.map((agent) => agent.definition);
+			const { definitions, definitionSource } = resolveRunSubAgentDefinitions({
+				loadedDefinitions: loadedSubAgents,
+			});
+			sessionOptions.customTools = [
+				...(sessionOptions.customTools ?? []),
+				createRunSubAgentTool({
+					cwd,
+					agentDir,
+					definitions,
+					definitionSource,
+					sharedStateRoot: process.env.PI_MULTI_AGENT_SHARED_STATE_ROOT,
+					mainSessionId: sessionManager.getSessionId(),
+					sessionDir,
+				}),
+			];
+		}
 
 		if (parsed.apiKey) {
 			if (!sessionOptions.model) {

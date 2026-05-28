@@ -1149,6 +1149,15 @@ Phase 4 实现状态：
 - persistent 仍显式拒绝，第一期只支持 ephemeral / session。
 ```
 
+Shared State path 边界：
+
+```text
+- prd/pm.md、analysis/engineering.md、summary/final.md 是 Shared State logical paths。
+- SubAgent 只能通过 shared_state.* tools 访问这些 logical paths。
+- run_subagent result 展示 sharedStateRoot，主 agent 或人工调试如果需要读真实文件，必须用 sharedStateRoot + logical path 组成物理路径。
+- 不应把 logical path 当作 repo cwd 相对路径用普通 read/bash 读取。
+```
+
 ---
 
 ## 16. 第一阶段实现范围
@@ -1200,9 +1209,204 @@ listening/running/listening lifecycle
 
 ## 17. 后续演进
 
-### 第二期：Bus
+### 第二期：Persistent / Resumable SubAgent Runtime
 
-实现：
+后续阶段的第一优先级不是 scheduler，而是把 SubAgent 从“一次性 worker”推进到“可持续存在、可恢复上下文的角色”。
+
+目标形态：
+
+```text
+persistent identity
+resumable session / context
+shared-state-based multi-round collaboration
+one logical role -> one session-style instance
+```
+
+核心设计判断：
+
+- `pm-agent`、`engineering-agent`、`ui-agent` 这类 SubAgent 更像长期角色，而不是一次性短任务 worker。
+- Shared State 的价值在于同一角色跨多轮持续读写和参考共同知识面；如果每轮都丢失局部上下文，就无法充分发挥 Shared State 的协作价值。
+- persistent 不一定等于进程级常驻 runtime；更准确的目标是 **persistent identity + resumable context**。也就是说，SubAgent 可以在不活跃时回到 idle，但在下一次主流程启动或下一轮用户 query 时，仍能恢复自己的 session/messages。
+
+实现方向：
+
+```text
+persistent statePolicy 变为真实能力
+SubAgent inspect / close / resume / list-active
+session 持久化与恢复策略
+角色级 session 生命周期管理
+```
+
+运行时不变量：
+
+```text
+同一个 session-style SubAgent role 只对应一个逻辑 instance
+同一个 session instance 在同一时刻只允许一个 active run
+如果并发重复 invoke 同一个 agentId，则返回 structured busy/conflict，由主 agent 在下一轮决定是否重试
+```
+
+这里要特别区分两层：
+
+- 这不是产品层的“one-task-at-a-time workflow 约束”；主 agent 完全可以继续以 agentic loop 或 workflow 方式决定本轮要不要再次调用某个 SubAgent。
+- 这是底层 runtime 的一致性约束：同一条 session transcript 不能同时跑两个 active agentic loop，否则 phase、messages、tool trace、abort/waitForIdle 语义都会变脏。
+
+因此，这一阶段优先提供：
+
+```text
+busy/conflict 可观测状态
+resume 能力
+session 生命周期管理
+```
+
+而不是过早引入 queue / replace / inbox scheduler。
+
+#### 第二期最小实现范围
+
+建议把这一阶段严格收敛为“角色恢复能力”，而不是一次性把 persistent runtime、team coordination、bus 和 scheduler 全部做进去。
+
+必须做：
+
+```text
+1. session-style SubAgent 的 create-or-resume 语义
+2. logical role identity 与 session 绑定规则
+3. single-active-run runtime invariant 的正式实现
+4. inspect / list-active / close / resume 这类最小可观测与生命周期接口
+```
+
+推荐一起做：
+
+```text
+Shared State manifest persistence
+```
+
+原因：如果承诺 SubAgent 可跨重启恢复，而 Shared State 文件存在但 manifest 丢失，则 owner/version/provenance 语义会断裂。若本阶段不做 manifest persistence，文档必须明确“只保证 session 恢复，不保证 Shared State 治理元数据恢复完整”。
+
+这一阶段明确不做：
+
+```text
+queue / replace / inbox
+固定 workflow scheduler / DAG engine
+bus-driven autonomous activation
+复杂 stop condition / no-progress reasoning engine
+复杂 conflict resolution / semantic merge
+```
+
+#### 第二期实现落点
+
+Phase 6 的实现采用 main-session scoped team：同一个主会话下的同一个 role 恢复同一个 sub-agent session，不同主会话不共享 role 上下文。
+
+```text
+role identity = mainSessionId + agentId + definitionIdentity
+definitionIdentity = source(file/demo/custom) + fingerprint + optional sourcePath
+role-session index = .pi/multi-agent/role-sessions.json
+shared-state manifest = sharedStateRoot/.manifest.json
+```
+
+SubAgent transcript 不嵌入主 session。主 session 只看到 `run_subagent` 的摘要 result；完整 message/tool trace 由 sub-agent 自己的 JSONL session file 保存，后续 GUI 或内部 inspect API 可以基于 role-session index 找到它。
+
+第一版生命周期能力保持内部 API：runner 可以 inspect/close，lifecycle store 负责 create-or-resume 与 idle/running/closed 状态更新；不新增用户可见 CLI/TUI/LLM tool。
+
+#### 第二期实现结果
+
+Phase 6 已完成最小 persistent/resumable role runtime：
+
+```text
+- role identity 固定为 mainSessionId + agentId + definitionIdentity
+- definitionIdentity 使用 source(file/demo/custom) + fingerprint + optional sourcePath
+- session-style role 通过 role-session index create-or-resume
+- ephemeral role 保持 in-memory，不写入 role-session index
+- run_subagent result 继续只返回摘要 trace；完整 transcript 在 sub-agent 自己的 JSONL session file
+- Shared State manifest 持久化到 sharedStateRoot/.manifest.json
+- 默认 sharedStateRoot 基于 main session id，支持主会话 resume 后复用
+- close(agentId) / close() 更新持久 lifecycle 状态为 closed
+- busy/conflict 返回 SUB_AGENT_BUSY，且不会误把正在运行的持久 role 标记为 idle
+```
+
+持久化文件：
+
+```text
+role-session index:
+  .pi/multi-agent/role-sessions.json
+
+shared-state manifest:
+  <sharedStateRoot>/.manifest.json
+
+sub-agent transcript:
+  复用 coding-agent SessionManager JSONL session file
+```
+
+写入语义：
+
+```text
+role-session index 与 shared-state manifest 使用 atomic rename 写入，避免半写 JSON。
+第一版不做跨进程 merge lock；两个进程同时写同一个 index/manifest 时仍可能是 last-write-wins。
+```
+
+已验证：
+
+```text
+- 同一 role 再次调用时 resume 同一个 sub-agent session
+- 重建 runner 后仍通过 role-session index 恢复同一个 session file
+- 不同 main session 下同名 agent 不共享 role session
+- definition fingerprint 改变时不误复用旧 session
+- 同一 role 并发调用返回 SUB_AGENT_BUSY
+- SUB_AGENT_BUSY 分支不会把运行中的 persisted role 写成 idle
+- close(agentId) / close() 会标记 persisted role closed
+- 不同 role 仍可并行
+- ephemeral agent 不落入 role-session index
+- manifest owner/version/provenance 可跨 manifest reload 恢复
+- wildcard Shared State grant 支持 omitted-path list / grep
+- sub-agent 持久化后仍保持资源隔离，不继承主 session 普通 tools/resources
+```
+
+验收命令：
+
+```bash
+cd packages/multi-agent
+node ../../node_modules/vitest/dist/cli.js --run test/role-session-index.test.ts test/file-shared-state-manifest.test.ts test/run-subagent.test.ts
+
+cd packages/coding-agent
+node ../../node_modules/vitest/dist/cli.js --run test/multi-agent-integration.test.ts test/multi-agent-shared-state-rounds.test.ts test/multi-agent-run-subagent.test.ts test/multi-agent-adapter.test.ts test/multi-agent-shared-state-tools.test.ts test/multi-agent-persistent-runtime.test.ts
+
+cd ../..
+npm run check
+```
+
+推荐验收标准：
+
+```text
+- 同一 role 再次调用时能 resume，而不是创建全新 session
+- 重启后仍能恢复 role 上下文
+- 同一 role 不会并发跑两个 active run
+- 不同 role 仍可并行
+- main agent 能知道当前有哪些角色、谁在忙、谁可继续调度
+```
+
+### 第三期：Shared State Team Coordination
+
+在 persistent/resumable role runtime 稳定后，下一优先级是 Shared State 多轮协作的角色语义与收敛机制，而不是先实现固定 DAG 调度器。
+
+关注点：
+
+```text
+角色如何围绕共同知识面持续协作
+何时算有新增信息 / 有进展
+何时停止
+如何避免重复劳动
+如何避免反应式循环
+新角色加入时如何消费既有 shared state
+```
+
+这一阶段更接近 `Shared State + Agent Teams` 的产品形态：
+
+- 已存在角色在后续用户 query 中继续参与。
+- 新角色可以动态加入。
+- 上层主 agent 可以是 workflow，也可以仍然是 agentic loop。
+- Shared State 不只是 access surface，而是长期协作知识面。
+
+### 第四期：Bus / Activation Signal
+
+如果后续需要让角色不只被主 agent 显式调用，而能“感知到新一轮输入或协作变化”，则再推进 Bus / activation signal 能力：
 
 ```text
 MessageBus
@@ -1212,20 +1416,11 @@ listen()
 publish/ack/retry/dead-letter
 ```
 
-### 第三期：Agent Team
+这一阶段的价值在于提供角色被唤起的机制，而不是替代 Shared State。
 
-实现：
+### 第五期：更通用的 orchestration
 
-```text
-persistent statePolicy
-SubAgent inspect / assign / close
-TeamStateAccessSurface
-长期生命周期管理
-```
-
-### 第四期：更通用的 orchestration
-
-在 SubAgent 层稳定后，再做上层策略：
+在 SubAgent 生命周期、Shared State 团队协作语义、以及可选的 activation mechanism 都稳定后，再做更通用的 orchestration。这里的重点也不是先做固定 scheduler，而是支持多种编排风格都能利用底层 persistent/resumable SubAgent：
 
 ```text
 OrchestratorWorkersPolicy
@@ -1234,7 +1429,13 @@ AgentTeamPolicy
 SharedStatePolicy
 ```
 
-此时 orchestration 层会很薄，因为 SubAgent 已经封装了 prompt/tools/skills/MCP/session/access surface。
+约束边界：
+
+- 上层 orchestration 可以是固定 workflow，也可以仍然是主 agent 的 agentic loop。
+- SubAgent runtime 不负责抢先决定 queue / replace / retry policy；它只负责暴露结构化 busy/conflict 和稳定生命周期。
+- 真正需要前置设计的是 shared-state 协作的收敛机制：何时算有进展、何时停止、如何避免重复劳动与反应式循环。
+
+此时 orchestration 层会保持较薄，因为 SubAgent 已经封装了 prompt/tools/skills/MCP/session/access surface，而 persistent/resumable role runtime 已经把“角色持续协作”这件事兜住。
 
 ---
 
@@ -1247,4 +1448,178 @@ SharedStatePolicy
 需要协作时通过 access surface 增加 shared memory / bus 等 multi-agent 能力；
 每个 SubAgent 独立定义自己的 prompt、tools、skills、MCP 和权限；
 上层 orchestration 只负责调度，不负责 agent 内部装配。
+```
+
+---
+
+## 9. 文件化 Sub-Agent Definitions
+
+Sub-agent definition 是 Pi 的一等资源，和 skills/prompts/extensions/themes 一样由 resource loader 发现和装配。
+
+发现路径：
+
+```text
+project: .pi/agents/*.md
+user:    ~/.pi/agent/agents/*.md
+```
+
+格式采用 Claude-like Markdown + YAML frontmatter，便于迁移和手工编辑；但 Pi 不直接照搬 Claude Code 的工具权限语义。Frontmatter 中 `tools` 只是迁移兼容层，正式权限模型仍是 `accessSurfaces` / `grants`。
+
+推荐格式：
+
+```md
+---
+id: engineering-agent
+name: Engineering Agent
+description: Maintains implementation analysis
+statePolicy: session
+accessSurfaces:
+  - type: shared_state
+    grants:
+      - space: analysis
+        permissions: [list, read, grep, write, edit]
+      - space: prd
+        permissions: [list, read, grep]
+---
+You are engineering-agent...
+```
+
+兼容格式：
+
+```md
+---
+name: writer-agent
+tools: shared_state.read, shared_state.write
+---
+Write artifacts through Shared State.
+```
+
+安全边界：
+
+```text
+支持的 tools 映射仅限 shared_state.list/read/grep/write/edit。
+Bash/WebSearch/WebFetch/MCP/Read/Grep/Glob 等 Claude-like tools 会 warning + skip。
+未声明 accessSurfaces 且 tools 无法安全映射时，agent 仍可加载，但不会获得额外 tools。
+Sub-agent 仍使用 restricted resource loader，不继承主 session 的 tools、skills、prompts、extensions、AGENTS.md 或 CLAUDE.md。
+```
+
+Shared State 路径边界：
+
+```text
+prd/pm.md、analysis/engineering.md、summary/final.md 是 Shared State logical path。
+这些 logical path 不是 repo cwd 相对路径，sub-agent 应通过 shared_state.* tools 访问。
+run_subagent result 会展示 sharedStateRoot，方便主 agent 或人工调试时定位物理文件。
+physical root 不作为 sub-agent API 暴露；sub-agent 协作协议仍以 logical path 为准。
+```
+
+### 9.1 Phase 5.1 完成状态
+
+Phase 5.1 已把 sub-agent definition 从 hardcoded demo 升级为文件化产品资源：
+
+```text
+.pi/agents/*.md
+~/.pi/agent/agents/*.md
+settings.agents
+```
+
+`run_subagent` 的 registry 来源规则是：
+
+```text
+如果发现文件化 agents：只注册文件化 agents，不混入 demo agents。
+如果没有发现文件化 agents：fallback 到 createDemoSubAgentDefinitions()，保留 smoke/test 体验。
+```
+
+TUI startup 中的 `[Agents]` 只表示 resource loader 实际加载到的文件化 agents。demo fallback 不伪装成资源，因此无文件化 agents 时可以没有 `[Agents]` section，但 `run_subagent` 仍可能可用 demo definitions。
+
+已验证的产品行为：
+
+```text
+文件化 agents 可被 TUI startup 展示。
+文件化 pm/engineering/synthesis agents 可完成 Shared State 多轮协作。
+unsupported tools 会产生 `[Agent issues]`，但不阻断 agent 加载。
+移除 .pi/agents 后，run_subagent fallback demo definitions。
+```
+
+### 9.2 用户交互边界
+
+Phase 5.x 中，sub-agent 是后台受限 worker，不是可直接和用户对话的 runtime。
+
+当前链路是：
+
+```text
+用户 <-> main agent <-> run_subagent <-> sub-agent
+```
+
+因此：
+
+```text
+sub-agent 不能直接读取 TUI 输入。
+sub-agent 不能抢占当前输入流向用户提问。
+sub-agent 若需要澄清，只能把问题作为 finalText 返回。
+main agent 可以选择把问题转述给用户，再次调用同一个 sub-agent。
+```
+
+这是有意的阶段性边界，不应在 TUI 中临时扩展成多 runtime 交互。理想形态应留给未来 GUI：
+
+```text
+Agent Runtime Manager
+  main runtime session
+  pm-agent runtime session
+  engineering-agent runtime session
+  ...
+
+GUI
+  runtime/session list
+  active runtime switch
+  each runtime owns transcript/tools/status
+```
+
+在该未来形态中，用户可以切换到某个 sub-agent runtime 直接交互；但这属于 persistent Agent Runtime / Agent Team UI 方向，不属于 Phase 5.x 的 `run_subagent` worker contract。
+
+### 9.3 Phase 5.2 Runtime Contract 收敛
+
+Phase 5.2 增加了运行时可观测 contract，使主 agent、TUI/CLI 和测试都能判断当前 `run_subagent` 使用的是哪类 definition，以及失败是否属于运行时冲突。
+
+`run_subagent` result text / details 暴露：
+
+```text
+sharedStateRoot: <physical root for debugging>
+definitionSource: file | demo | custom
+```
+
+含义：
+
+```text
+file   = 来自 .pi/agents 或 ~/.pi/agent/agents 的文件化 definitions。
+demo   = 未发现文件化 agents，使用 createDemoSubAgentDefinitions() fallback。
+custom = 测试、SDK 或调用方手动注入的 definitions。
+```
+
+失败结果增加 `errorCode`，用于区别普通模型失败与 runtime contract 冲突：
+
+```text
+SUB_AGENT_NOT_FOUND
+SUB_AGENT_UNSUPPORTED_STATE_POLICY
+SUB_AGENT_CONCURRENCY_LIMIT
+SUB_AGENT_BUSY
+SUB_AGENT_ERROR
+```
+
+这些 code 的产品含义：
+
+```text
+SUB_AGENT_BUSY：同一个 session-style sub-agent 已有 active run；runtime 不静默排队。
+SUB_AGENT_CONCURRENCY_LIMIT：runner 级最大并发数已满。
+SUB_AGENT_NOT_FOUND：registry 中不存在该 agentId。
+SUB_AGENT_UNSUPPORTED_STATE_POLICY：当前阶段不支持 persistent。
+SUB_AGENT_ERROR：创建 session、挂载工具或执行过程中出现未分类错误。
+```
+
+保持的关键不变量：
+
+```text
+有文件化 agents 时，不自动混入 demo agents。
+无文件化 agents 时，demo fallback 只用于 smoke/test 体验。
+TUI [Agents] 展示 resource loader 加载到的 file agents，不展示 demo fallback。
+Sub-agent clarification 仍只是 finalText，不是 first-class user-input routing。
 ```

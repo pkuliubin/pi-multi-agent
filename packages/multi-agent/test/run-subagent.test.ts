@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { AgentSessionFactory, CreateSubAgentSessionInput } from "../src/index.ts";
+import type {
+	AgentSessionFactory,
+	AgentSessionLike,
+	CreateSubAgentSessionInput,
+	SubAgentLifecycleStore,
+	SubAgentRoleSessionBinding,
+} from "../src/index.ts";
 import { RunSubAgentRunner, SubAgentRegistry } from "../src/index.ts";
 import { createAssistantMessage, MockAgentSession } from "./test-utils.ts";
 
@@ -15,6 +21,36 @@ class MockSessionFactory implements AgentSessionFactory {
 		this.createHandler?.(input, session);
 		this.sessions.push(session);
 		return session;
+	}
+}
+
+class MockLifecycleStore implements SubAgentLifecycleStore {
+	sessions = new Map<string, AgentSessionLike>();
+	states: string[] = [];
+
+	async getOrCreate(input: {
+		definition: Parameters<SubAgentLifecycleStore["getOrCreate"]>[0]["definition"];
+		roleSession: SubAgentRoleSessionBinding;
+		create: () => Promise<AgentSessionLike>;
+	}): Promise<AgentSessionLike> {
+		const key = `${input.roleSession.mainSessionId}:${input.definition.id}:${input.roleSession.definitionIdentity.fingerprint}`;
+		const existing = this.sessions.get(key);
+		if (existing) return existing;
+		const session = await input.create();
+		this.sessions.set(key, session);
+		return session;
+	}
+
+	markRunning(): void {
+		this.states.push("running");
+	}
+
+	markIdle(): void {
+		this.states.push("idle");
+	}
+
+	markClosed(): void {
+		this.states.push("closed");
 	}
 }
 
@@ -46,6 +82,7 @@ describe("RunSubAgentRunner", () => {
 			agentId: "missing",
 			status: "failed",
 			errorMessage: "SubAgent definition not found: missing",
+			errorCode: "SUB_AGENT_NOT_FOUND",
 		});
 	});
 
@@ -60,6 +97,7 @@ describe("RunSubAgentRunner", () => {
 
 		expect(result.status).toBe("failed");
 		expect(result.errorMessage).toContain("persistent");
+		expect(result.errorCode).toBe("SUB_AGENT_UNSUPPORTED_STATE_POLICY");
 	});
 
 	it("creates a new session for every ephemeral invocation", async () => {
@@ -125,6 +163,35 @@ describe("RunSubAgentRunner", () => {
 
 		expect(second.status).toBe("failed");
 		expect(second.errorMessage).toContain("already running");
+		expect(second.errorCode).toBe("SUB_AGENT_BUSY");
+	});
+
+	it("does not mark a busy persisted role idle before the active run finishes", async () => {
+		const deferred = createDeferred();
+		const lifecycleStore = new MockLifecycleStore();
+		const factory = new MockSessionFactory();
+		factory.createHandler = (_input, session) => {
+			session.promptHandler = () => deferred.promise;
+		};
+		const runner = new RunSubAgentRunner({
+			registry: registryWith({ id: "worker", statePolicy: "session", systemPrompt: "stable" }),
+			sessionFactory: factory,
+			cwd: "/tmp",
+			mainSessionId: "main",
+			lifecycleStore,
+		});
+
+		const first = runner.run({ agentId: "worker", task: "one" });
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		const second = await runner.run({ agentId: "worker", task: "two" });
+
+		expect(second.errorCode).toBe("SUB_AGENT_BUSY");
+		expect(lifecycleStore.states).toEqual(["running"]);
+
+		deferred.resolve();
+		await first;
+
+		expect(lifecycleStore.states).toEqual(["running", "idle"]);
 	});
 
 	it("does not create duplicate session instances for concurrent session invocations", async () => {
@@ -171,6 +238,7 @@ describe("RunSubAgentRunner", () => {
 
 		expect(second.status).toBe("failed");
 		expect(second.errorMessage).toContain("Too many active");
+		expect(second.errorCode).toBe("SUB_AGENT_CONCURRENCY_LIMIT");
 	});
 
 	it("aborts on timeout", async () => {
@@ -235,6 +303,123 @@ describe("RunSubAgentRunner", () => {
 		expect(second.sessionId).toBe("session-2");
 		expect(factory.created).toHaveLength(2);
 		expect(factory.sessions[0]?.disposeCalls).toBe(1);
+	});
+
+	it("restores session policy instances through a lifecycle store after runner restart", async () => {
+		const lifecycleStore = new MockLifecycleStore();
+		const factory = new MockSessionFactory();
+		factory.createHandler = (_input, session) => {
+			session.promptHandler = (text) => {
+				session.state.messages = [...session.state.messages, createAssistantMessage(text)];
+			};
+		};
+		const definition = { id: "worker", statePolicy: "session" as const, systemPrompt: "stable" };
+		const firstRunner = new RunSubAgentRunner({
+			registry: registryWith(definition),
+			sessionFactory: factory,
+			cwd: "/tmp",
+			mainSessionId: "main-1",
+			definitionSource: "custom",
+			lifecycleStore,
+		});
+
+		const first = await firstRunner.run({ agentId: "worker", task: "one" });
+		const secondRunner = new RunSubAgentRunner({
+			registry: registryWith(definition),
+			sessionFactory: factory,
+			cwd: "/tmp",
+			mainSessionId: "main-1",
+			definitionSource: "custom",
+			lifecycleStore,
+		});
+		const second = await secondRunner.run({ agentId: "worker", task: "two" });
+
+		expect(second.sessionId).toBe(first.sessionId);
+		expect(factory.created).toHaveLength(1);
+		expect(second.messageCountBefore).toBeGreaterThan(first.messageCountBefore);
+		expect(lifecycleStore.states).toEqual(["running", "idle", "running", "idle"]);
+	});
+
+	it("marks persisted role sessions closed when runner instances are closed", async () => {
+		const lifecycleStore = new MockLifecycleStore();
+		const factory = new MockSessionFactory();
+		factory.createHandler = (_input, session) => {
+			session.promptHandler = (text) => {
+				session.state.messages = [...session.state.messages, createAssistantMessage(text)];
+			};
+		};
+		const runner = new RunSubAgentRunner({
+			registry: registryWith({ id: "worker", statePolicy: "session", systemPrompt: "stable" }),
+			sessionFactory: factory,
+			cwd: "/tmp",
+			mainSessionId: "main",
+			lifecycleStore,
+		});
+
+		await runner.run({ agentId: "worker", task: "one" });
+		await runner.close("worker");
+
+		expect(lifecycleStore.states).toEqual(["running", "idle", "closed"]);
+		expect(factory.sessions[0]?.disposeCalls).toBe(1);
+	});
+
+	it("marks all persisted role sessions closed when closing the runner", async () => {
+		const lifecycleStore = new MockLifecycleStore();
+		const factory = new MockSessionFactory();
+		factory.createHandler = (_input, session) => {
+			session.promptHandler = (text) => {
+				session.state.messages = [...session.state.messages, createAssistantMessage(text)];
+			};
+		};
+		const runner = new RunSubAgentRunner({
+			registry: registryWith(
+				{ id: "pm", statePolicy: "session", systemPrompt: "pm" },
+				{ id: "eng", statePolicy: "session", systemPrompt: "eng" },
+			),
+			sessionFactory: factory,
+			cwd: "/tmp",
+			mainSessionId: "main",
+			lifecycleStore,
+		});
+
+		await runner.run({ agentId: "pm", task: "one" });
+		await runner.run({ agentId: "eng", task: "two" });
+		await runner.close();
+
+		expect(lifecycleStore.states).toEqual(["running", "idle", "running", "idle", "closed", "closed"]);
+		expect(factory.sessions.map((session) => session.disposeCalls)).toEqual([1, 1]);
+	});
+
+	it("does not share lifecycle store sessions across main sessions", async () => {
+		const lifecycleStore = new MockLifecycleStore();
+		const factory = new MockSessionFactory();
+		factory.createHandler = (_input, session) => {
+			session.promptHandler = () => {
+				session.state.messages = [...session.state.messages, createAssistantMessage(session.sessionId)];
+			};
+		};
+		const definition = { id: "worker", statePolicy: "session" as const, systemPrompt: "stable" };
+		const firstRunner = new RunSubAgentRunner({
+			registry: registryWith(definition),
+			sessionFactory: factory,
+			cwd: "/tmp",
+			mainSessionId: "main-1",
+			lifecycleStore,
+		});
+		const secondRunner = new RunSubAgentRunner({
+			registry: registryWith(definition),
+			sessionFactory: factory,
+			cwd: "/tmp",
+			mainSessionId: "main-2",
+			lifecycleStore,
+		});
+
+		const first = await firstRunner.run({ agentId: "worker", task: "one" });
+		const second = await secondRunner.run({ agentId: "worker", task: "two" });
+
+		expect(first.sessionId).toBe("session-1");
+		expect(second.sessionId).toBe("session-2");
+		expect(factory.created).toHaveLength(2);
 	});
 
 	it("passes Shared State access surface tools through capabilities", async () => {

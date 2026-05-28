@@ -30,6 +30,10 @@ export class RestrictedSubAgentResourceLoader implements ResourceLoader {
 		return { themes: [], diagnostics: [] };
 	}
 
+	getSubAgents(): ReturnType<ResourceLoader["getSubAgents"]> {
+		return { agents: [], diagnostics: [] };
+	}
+
 	getAgentsFiles(): ReturnType<ResourceLoader["getAgentsFiles"]> {
 		return { agentsFiles: [] };
 	}

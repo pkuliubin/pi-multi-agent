@@ -62,6 +62,7 @@ export interface ResolvedPaths {
 	skills: ResolvedResource[];
 	prompts: ResolvedResource[];
 	themes: ResolvedResource[];
+	agents: ResolvedResource[];
 }
 
 export type MissingSourceAction = "install" | "skip" | "error";
@@ -149,6 +150,7 @@ interface PiManifest {
 	skills?: string[];
 	prompts?: string[];
 	themes?: string[];
+	agents?: string[];
 }
 
 interface ResourceAccumulator {
@@ -156,6 +158,7 @@ interface ResourceAccumulator {
 	skills: Map<string, { metadata: PathMetadata; enabled: boolean }>;
 	prompts: Map<string, { metadata: PathMetadata; enabled: boolean }>;
 	themes: Map<string, { metadata: PathMetadata; enabled: boolean }>;
+	agents: Map<string, { metadata: PathMetadata; enabled: boolean }>;
 }
 
 /**
@@ -181,17 +184,19 @@ interface PackageFilter {
 	skills?: string[];
 	prompts?: string[];
 	themes?: string[];
+	agents?: string[];
 }
 
-type ResourceType = "extensions" | "skills" | "prompts" | "themes";
+type ResourceType = "extensions" | "skills" | "prompts" | "themes" | "agents";
 
-const RESOURCE_TYPES: ResourceType[] = ["extensions", "skills", "prompts", "themes"];
+const RESOURCE_TYPES: ResourceType[] = ["extensions", "skills", "prompts", "themes", "agents"];
 
 const FILE_PATTERNS: Record<ResourceType, RegExp> = {
 	extensions: /\.(ts|js)$/,
 	skills: /\.md$/,
 	prompts: /\.md$/,
 	themes: /\.json$/,
+	agents: /\.md$/,
 };
 
 const IGNORE_FILE_NAMES = [".gitignore", ".ignore", ".fdignore"];
@@ -2218,12 +2223,14 @@ export class DefaultPackageManager implements PackageManager {
 			skills: (globalSettings.skills ?? []) as string[],
 			prompts: (globalSettings.prompts ?? []) as string[],
 			themes: (globalSettings.themes ?? []) as string[],
+			agents: (globalSettings.agents ?? []) as string[],
 		};
 		const projectOverrides = {
 			extensions: (projectSettings.extensions ?? []) as string[],
 			skills: (projectSettings.skills ?? []) as string[],
 			prompts: (projectSettings.prompts ?? []) as string[],
 			themes: (projectSettings.themes ?? []) as string[],
+			agents: (projectSettings.agents ?? []) as string[],
 		};
 
 		const userDirs = {
@@ -2231,12 +2238,14 @@ export class DefaultPackageManager implements PackageManager {
 			skills: join(globalBaseDir, "skills"),
 			prompts: join(globalBaseDir, "prompts"),
 			themes: join(globalBaseDir, "themes"),
+			agents: join(globalBaseDir, "agents"),
 		};
 		const projectDirs = {
 			extensions: join(projectBaseDir, "extensions"),
 			skills: join(projectBaseDir, "skills"),
 			prompts: join(projectBaseDir, "prompts"),
 			themes: join(projectBaseDir, "themes"),
+			agents: join(projectBaseDir, "agents"),
 		};
 		const userAgentsSkillsDir = join(getHomeDir(), ".agents", "skills");
 		const projectAgentsSkillDirs = collectAncestorAgentsSkillDirs(this.cwd).filter(
@@ -2305,6 +2314,13 @@ export class DefaultPackageManager implements PackageManager {
 			projectOverrides.themes,
 			projectBaseDir,
 		);
+		addResources(
+			"agents",
+			collectResourceFiles(projectDirs.agents, "agents"),
+			projectMetadata,
+			projectOverrides.agents,
+			projectBaseDir,
+		);
 
 		// User extensions from ~/.pi/agent/
 		addResources(
@@ -2352,6 +2368,13 @@ export class DefaultPackageManager implements PackageManager {
 			userOverrides.themes,
 			globalBaseDir,
 		);
+		addResources(
+			"agents",
+			collectResourceFiles(userDirs.agents, "agents"),
+			userMetadata,
+			userOverrides.agents,
+			globalBaseDir,
+		);
 	}
 
 	private collectFilesFromPaths(paths: string[], resourceType: ResourceType): string[] {
@@ -2386,6 +2409,8 @@ export class DefaultPackageManager implements PackageManager {
 				return accumulator.prompts;
 			case "themes":
 				return accumulator.themes;
+			case "agents":
+				return accumulator.agents;
 			default:
 				throw new Error(`Unknown resource type: ${resourceType}`);
 		}
@@ -2409,6 +2434,7 @@ export class DefaultPackageManager implements PackageManager {
 			skills: new Map(),
 			prompts: new Map(),
 			themes: new Map(),
+			agents: new Map(),
 		};
 	}
 
@@ -2437,6 +2463,7 @@ export class DefaultPackageManager implements PackageManager {
 			skills: mapToResolved(accumulator.skills),
 			prompts: mapToResolved(accumulator.prompts),
 			themes: mapToResolved(accumulator.themes),
+			agents: mapToResolved(accumulator.agents),
 		};
 	}
 

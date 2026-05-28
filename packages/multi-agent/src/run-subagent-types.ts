@@ -1,5 +1,11 @@
 import type { SharedStateGrant } from "./shared-state/index.ts";
-import type { AgentSessionFactory, AgentSessionLike, PiSubAgentDefinition, SubAgentResult } from "./types.ts";
+import type {
+	AgentSessionFactory,
+	AgentSessionLike,
+	PiSubAgentDefinition,
+	SubAgentInspection,
+	SubAgentResult,
+} from "./types.ts";
 
 export interface SharedStateSubAgentAccessSurfaceDefinition {
 	type: "shared_state";
@@ -30,6 +36,7 @@ export interface CreateSubAgentInstanceInput {
 	definition: PiSubAgentDefinition;
 	sessionPolicy: "ephemeral" | "session";
 	capabilities?: SubAgentCapabilities;
+	roleSession?: SubAgentRoleSessionBinding;
 }
 
 export interface SubAgentInstanceFactory {
@@ -37,6 +44,39 @@ export interface SubAgentInstanceFactory {
 }
 
 export type RunSubAgentSessionFactory = AgentSessionFactory | SubAgentInstanceFactory;
+
+export interface SubAgentRoleSessionBinding {
+	mainSessionId: string;
+	definitionIdentity: {
+		source: "file" | "demo" | "custom";
+		fingerprint: string;
+		sourcePath?: string;
+	};
+}
+
+export interface SubAgentLifecycleStore {
+	getOrCreate(input: {
+		definition: PiSubAgentDefinition;
+		roleSession: SubAgentRoleSessionBinding;
+		create: () => Promise<AgentSessionLike>;
+	}): Promise<AgentSessionLike>;
+	markRunning?(input: {
+		definition: PiSubAgentDefinition;
+		roleSession: SubAgentRoleSessionBinding;
+		session: AgentSessionLike;
+	}): void;
+	markIdle?(input: {
+		definition: PiSubAgentDefinition;
+		roleSession: SubAgentRoleSessionBinding;
+		session: AgentSessionLike;
+	}): void;
+	markClosed?(input: {
+		definition: PiSubAgentDefinition;
+		roleSession: SubAgentRoleSessionBinding;
+		session: AgentSessionLike;
+	}): void;
+	list?(mainSessionId?: string): SubAgentInspection[];
+}
 
 export interface RunSubAgentRunnerOptions {
 	registry: { get(id: string): PiSubAgentDefinition | undefined };
@@ -46,6 +86,9 @@ export interface RunSubAgentRunnerOptions {
 	model?: unknown;
 	thinkingLevel?: unknown;
 	maxConcurrentSubAgents?: number;
+	mainSessionId?: string;
+	definitionSource?: "file" | "demo" | "custom";
+	lifecycleStore?: SubAgentLifecycleStore;
 	createAccessSurfaceTools?: (input: {
 		definition: PiSubAgentDefinition;
 		accessSurface: SubAgentAccessSurfaceDefinition;

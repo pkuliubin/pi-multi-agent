@@ -1,3 +1,4 @@
+export { defaultSharedStateManifestPath, FileSharedStateManifest } from "./file-manifest.ts";
 export { MemorySharedStateManifest } from "./memory-manifest.ts";
 export type {
 	SharedStateAccessSurfaceDefinition,

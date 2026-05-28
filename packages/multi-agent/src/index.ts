@@ -1,4 +1,15 @@
 export { SubAgentRegistry } from "./registry.ts";
+export type {
+	RoleSessionBinding,
+	RoleSessionBindingKey,
+	SubAgentDefinitionIdentity,
+	UpsertRoleSessionBindingInput,
+} from "./role-session-index.ts";
+export {
+	createDefinitionIdentity,
+	defaultRoleSessionIndexPath,
+	FileRoleSessionIndex,
+} from "./role-session-index.ts";
 export { RunSubAgentRunner, SubAgentInstancePool } from "./run-subagent.ts";
 export type {
 	CreateSubAgentInstanceInput,
@@ -8,6 +19,8 @@ export type {
 	SharedStateSubAgentAccessSurfaceDefinition,
 	SubAgentAccessSurfaceDefinition,
 	SubAgentCapabilities,
+	SubAgentLifecycleStore,
+	SubAgentRoleSessionBinding,
 } from "./run-subagent-types.ts";
 export type {
 	SharedStateAccessSurfaceDefinition,
@@ -18,7 +31,11 @@ export type {
 	SharedStatePermission,
 	SharedStateUpdateInput,
 } from "./shared-state/index.ts";
-export { MemorySharedStateManifest } from "./shared-state/index.ts";
+export {
+	defaultSharedStateManifestPath,
+	FileSharedStateManifest,
+	MemorySharedStateManifest,
+} from "./shared-state/index.ts";
 export { PiSubAgentInstance } from "./sub-agent.ts";
 export type {
 	AgentSessionFactory,

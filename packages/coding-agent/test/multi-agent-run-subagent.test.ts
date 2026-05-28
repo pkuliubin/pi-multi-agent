@@ -1,6 +1,7 @@
 import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { ToolResultMessage } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxToolCall, registerFauxProvider } from "@earendil-works/pi-ai";
 import { MemorySharedStateManifest } from "@earendil-works/pi-multi-agent";
 import { afterEach, describe, expect, it } from "vitest";
@@ -46,6 +47,17 @@ function setupModelRegistry() {
 		})),
 	});
 	return { faux, modelRegistry };
+}
+
+function isRunSubAgentToolResult(message: unknown): message is ToolResultMessage {
+	return (
+		typeof message === "object" &&
+		message !== null &&
+		"role" in message &&
+		(message as { role: unknown }).role === "toolResult" &&
+		"toolName" in message &&
+		(message as { toolName: unknown }).toolName === "run_subagent"
+	);
 }
 
 afterEach(() => {
@@ -110,13 +122,14 @@ describe("formal run_subagent tool", () => {
 
 		await session.prompt("delegate to writer");
 
-		const toolResult = session.messages.find(
-			(message) => message.role === "toolResult" && message.toolName === "run_subagent",
-		);
+		const toolResult = session.messages.find((message) => isRunSubAgentToolResult(message));
 		expect(getMessageText(toolResult)).toContain("wrote prd/test.md");
+		expect(getMessageText(toolResult)).toContain(`sharedStateRoot: ${sharedStateRoot}`);
+		expect(getMessageText(toolResult)).toContain("definitionSource: custom");
 		expect(getMessageText(toolResult)).toMatch(/startedAt: \d{4}-\d{2}-\d{2}T/);
 		expect(getMessageText(toolResult)).toMatch(/endedAt: \d{4}-\d{2}-\d{2}T/);
 		expect(getMessageText(toolResult)).toMatch(/durationMs: \d+/);
+		expect(toolResult?.details).toMatchObject({ sharedStateRoot, definitionSource: "custom" });
 		expect(manifest.get("prd/test.md")).toMatchObject({ ownerAgentId: "writer", version: 1 });
 		expect(session.getActiveToolNames()).toEqual(["run_subagent"]);
 		expect(session.messages.filter((message) => message.role === "user").map(getMessageText)).toEqual([

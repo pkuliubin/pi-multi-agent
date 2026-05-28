@@ -172,7 +172,7 @@ function getSpace(relativePath: string): string {
 }
 
 function findGrant(grants: SharedStateGrant[], space: string): SharedStateGrant | undefined {
-	return grants.find((grant) => grant.space === space);
+	return grants.find((grant) => grant.space === space) ?? grants.find((grant) => grant.space === "*");
 }
 
 function hasPermission(grant: SharedStateGrant, permission: SharedStatePermission): boolean {
@@ -206,7 +206,30 @@ function normalizeAccess(
 }
 
 function authorizedSpaces(grants: SharedStateGrant[], permission: SharedStatePermission): string[] {
-	return grants.filter((grant) => hasPermission(grant, permission)).map((grant) => grant.space);
+	return grants
+		.filter((grant) => hasPermission(grant, permission))
+		.map((grant) => grant.space)
+		.filter((space) => space !== "*");
+}
+
+function hasWildcardPermission(grants: SharedStateGrant[], permission: SharedStatePermission): boolean {
+	return grants.some((grant) => grant.space === "*" && hasPermission(grant, permission));
+}
+
+function authorizedArtifacts(
+	manifest: SharedStateManifest,
+	grants: SharedStateGrant[],
+	permission: SharedStatePermission,
+): SharedStateArtifact[] {
+	if (hasWildcardPermission(grants, permission)) return manifest.list();
+	return authorizedSpaces(grants, permission).flatMap((space) => manifest.list(space));
+}
+
+function authorizedGrepSpaces(manifest: SharedStateManifest, grants: SharedStateGrant[]): string[] {
+	if (hasWildcardPermission(grants, "grep")) {
+		return [...new Set(manifest.list().map((artifact) => artifact.space))];
+	}
+	return authorizedSpaces(grants, "grep");
 }
 
 function assertCanOverwrite(agentId: string, grant: SharedStateGrant, artifact: SharedStateArtifact): void {
@@ -278,8 +301,7 @@ export function createSharedStateTools(options: CreateSharedStateToolsOptions): 
 			parameters: sharedStateListSchema,
 			async execute(toolCallId, params: SharedStateListInput, signal, onUpdate, ctx) {
 				if (!params.path) {
-					const spaces = authorizedSpaces(options.grants, "list");
-					const artifacts = spaces.flatMap((space) => options.manifest.list(space));
+					const artifacts = authorizedArtifacts(options.manifest, options.grants, "list");
 					const limited = params.limit === undefined ? artifacts : artifacts.slice(0, Math.max(0, params.limit));
 					return { content: [{ type: "text", text: formatArtifactList(limited) }], details: undefined };
 				}
@@ -314,8 +336,13 @@ export function createSharedStateTools(options: CreateSharedStateToolsOptions): 
 			parameters: sharedStateGrepSchema,
 			async execute(toolCallId, params: SharedStateGrepInput, signal, onUpdate, ctx) {
 				if (!params.path) {
-					const spaces = authorizedSpaces(options.grants, "grep");
-					if (spaces.length === 0) throw new Error("Shared state permission denied for grep");
+					const spaces = authorizedGrepSpaces(options.manifest, options.grants);
+					if (spaces.length === 0 && !hasWildcardPermission(options.grants, "grep")) {
+						throw new Error("Shared state permission denied for grep");
+					}
+					if (spaces.length === 0) {
+						return { content: [{ type: "text", text: "No matches found" }], details: undefined };
+					}
 					const results = await Promise.allSettled(
 						spaces.map((space) =>
 							grepTool.execute(
