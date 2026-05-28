@@ -818,12 +818,15 @@ npm run check
 
 ### 实现内容
 
-新增：
+已新增：
 
 ```text
-packages/multi-agent/src/run-subagent/tool.ts
-packages/multi-agent/src/run-subagent/runner.ts
-packages/multi-agent/src/run-subagent/types.ts
+packages/multi-agent/src/run-subagent.ts
+packages/multi-agent/src/run-subagent-types.ts
+packages/coding-agent/src/core/multi-agent/run-subagent-tool.ts
+packages/coding-agent/test/multi-agent-run-subagent.test.ts
+packages/coding-agent/test/multi-agent-shared-state-rounds.test.ts
+packages/coding-agent/test/multi-agent-shared-state-rounds-smoke.test.ts
 ```
 
 核心输入：
@@ -835,6 +838,8 @@ interface RunSubAgentInput {
   invocationId?: string;
   statePolicyOverride?: "ephemeral" | "session";
   timeoutMs?: number;
+  model?: unknown;
+  thinkingLevel?: unknown;
 }
 ```
 
@@ -852,7 +857,10 @@ Runner 依赖：
 interface RunSubAgentRunnerOptions {
   registry: SubAgentRegistry;
   sessionFactory: AgentSessionFactory;
+  cwd: string;
+  agentDir?: string;
   maxConcurrentSubAgents?: number;
+  createAccessSurfaceTools?: (...args) => unknown[];
 }
 ```
 
@@ -879,6 +887,16 @@ running 冲突：第一版直接返回 error；后续再做 queue
 ```
 
 
+Phase 4 已补充的可靠性策略：
+
+```text
+session 首次并发创建：通过 pending instance map 去重，避免同 agent 分叉成两个 session。
+模型一致性：run_subagent 每次执行使用当前 ctx.model / thinkingLevel；session worker 在模型配置变化后重建 session。
+timeout trace：timeout result 使用调用开始时快照，避免 startedAt / messageCountBefore 失真。
+事件监听：sub-agent adapter 捕获异步 listener rejection，记录错误但不把整个进程打崩。
+```
+
+
 ### coding-agent 工具注册方式
 
 `packages/multi-agent` 提供 `createRunSubAgentTool(...)` 或 ToolDefinition factory。
@@ -895,36 +913,98 @@ running 冲突：第一版直接返回 error；后续再做 queue
 第一版可先不暴露给所有用户，放在内部或 behind flag：
 
 ```text
-settings flag
-CLI hidden option
-SDK option
+PI_MULTI_AGENT_RUN_SUBAGENT=1
+PI_MULTI_AGENT_SHARED_STATE_ROOT=/tmp/pi-phase4-cli-state
 ```
 
-### 单元测试
+`pi-test.sh` 已支持从 repo root `.env` 加载本地变量，可把 `DEEPSEEK_API_KEY`、`PI_MULTI_AGENT_RUN_SUBAGENT`、`PI_MULTI_AGENT_SHARED_STATE_ROOT` 放入 `.env`，避免每次手输。
 
-新增：
+### 单元测试与验证
+
+新增/更新：
 
 ```text
 packages/multi-agent/test/run-subagent.test.ts
+packages/multi-agent/test/shared-state-manifest.test.ts
+packages/coding-agent/test/multi-agent-run-subagent.test.ts
+packages/coding-agent/test/multi-agent-adapter.test.ts
+packages/coding-agent/test/multi-agent-shared-state-tools.test.ts
+packages/coding-agent/test/multi-agent-shared-state-rounds.test.ts
+packages/coding-agent/test/multi-agent-shared-state-rounds-smoke.test.ts
 ```
 
-使用 mock `AgentSessionFactory`。
-
-测试内容：
+覆盖内容：
 
 - 找不到 agentId 返回 error result。
+- persistent definition 被拒绝。
 - ephemeral 每次调用创建新 session。
 - session policy 多次调用复用 instance/session。
+- session 首次并发调用不会创建重复 session。
 - session instance running 时第二次调用被拒绝。
-- timeout 触发 abort。
-- tool result 默认只包含 `SubAgentResult.finalText` 和必要 metadata。
-- 不泄漏 SubAgent 内部 full transcript。
+- model / thinkingLevel 变化时 session worker 重建 session。
+- timeout 触发 abort，trace 统计使用真实调用起点。
+- Shared State capability tools 正确挂载到 sub-agent。
+- OpenAI-compatible provider 下 dotted tool name 清洗并检测撞名。
+- tool result 展示 startedAt / endedAt / durationMs。
 
-### 验收方式
+已验证：
 
 ```text
 npm --prefix packages/multi-agent run test
-npm --prefix packages/multi-agent run build
+node ../../node_modules/vitest/dist/cli.js --run test/multi-agent-shared-state-tools.test.ts test/multi-agent-adapter.test.ts test/multi-agent-run-subagent.test.ts
+npm run check
+```
+
+---
+
+### Phase 4 手动 CLI / TUI 验证结果
+
+已用 DeepSeek 手动验证多轮 Shared State 协作：
+
+```bash
+PI_MULTI_AGENT_RUN_SUBAGENT=1 PI_MULTI_AGENT_SHARED_STATE_ROOT=/tmp/pi-phase4-cli-state ./pi-test.sh --provider deepseek --model deepseek-v4-flash -p '请使用 pm-agent 和 engineering-agent 做两轮协作...'
+```
+
+产物：
+
+```text
+/tmp/pi-phase4-cli-state/prd/pm.md
+/tmp/pi-phase4-cli-state/analysis/engineering.md
+/tmp/pi-phase4-cli-state/summary/final.md
+```
+
+TUI 中 `run_subagent` result 已显示：
+
+```text
+startedAt: 2026-05-28T02:25:44.107Z
+endedAt: ...
+durationMs: ...
+```
+
+同轮 `pm-agent` 与 `engineering-agent` 的 `startedAt` 相同，执行区间重叠，确认并行调用生效。
+
+### Phase 4 可靠性补丁汇总
+
+```text
+1. async listener rejection 不再导致 uncaughtException。
+2. session worker 首次并发创建去重。
+3. run_subagent 使用每次调用的当前模型配置。
+4. mutationLocks 正确清理。
+5. shared_state.grep 单 space 失败不拖垮全部成功结果。
+6. shared_state.grep limit 改为全局 limit。
+7. timeout trace 使用真实调用起点。
+8. manifest metadata 深拷贝。
+9. OpenAI-compatible tool name 清洗检测撞名。
+10. capability tool 校验 label / description。
+```
+
+当前边界：
+
+```text
+- 仍不是完整 CoordinationPolicy / scheduler；多轮顺序由主 agent prompt 驱动。
+- Shared State manifest 仍是内存态，文件内容持久，manifest 不持久。
+- Shared State logical path 与物理 root 需要在主 agent guidance / tool result 中继续明确，避免主 agent 误用 repo-relative read。
+- persistent sub-agent 仍未实现。
 ```
 
 ---

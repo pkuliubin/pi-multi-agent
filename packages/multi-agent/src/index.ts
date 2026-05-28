@@ -1,4 +1,14 @@
 export { SubAgentRegistry } from "./registry.ts";
+export { RunSubAgentRunner, SubAgentInstancePool } from "./run-subagent.ts";
+export type {
+	CreateSubAgentInstanceInput,
+	RunSubAgentInput,
+	RunSubAgentRunnerOptions,
+	RunSubAgentToolResult,
+	SharedStateSubAgentAccessSurfaceDefinition,
+	SubAgentAccessSurfaceDefinition,
+	SubAgentCapabilities,
+} from "./run-subagent-types.ts";
 export type {
 	SharedStateAccessSurfaceDefinition,
 	SharedStateArtifact,

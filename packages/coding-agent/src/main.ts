@@ -29,7 +29,12 @@ import { configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { KeybindingsManager } from "./core/keybindings.ts";
 import type { ModelRegistry } from "./core/model-registry.ts";
 import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.ts";
-import { createDirectRunSubAgentTool } from "./core/multi-agent/index.ts";
+import {
+	createDemoSubAgentDefinitions,
+	createDirectRunSubAgentTool,
+	createRunSubAgentTool,
+	defaultSharedStateRoot,
+} from "./core/multi-agent/index.ts";
 import { restoreStdout, takeOverStdout } from "./core/output-guard.ts";
 import type { CreateAgentSessionOptions } from "./core/sdk.ts";
 import {
@@ -292,6 +297,8 @@ function buildSessionOptions(
 	hasExistingSession: boolean,
 	modelRegistry: ModelRegistry,
 	settingsManager: SettingsManager,
+	cwd: string,
+	agentDir: string,
 ): {
 	options: CreateAgentSessionOptions;
 	cliThinkingFromModel: boolean;
@@ -377,7 +384,19 @@ function buildSessionOptions(
 		options.tools = [...parsed.tools];
 	}
 
-	if (isTruthyEnvFlag(process.env.PI_MULTI_AGENT_DIRECT_SUBAGENT)) {
+	if (isTruthyEnvFlag(process.env.PI_MULTI_AGENT_RUN_SUBAGENT)) {
+		const sharedStateRoot =
+			process.env.PI_MULTI_AGENT_SHARED_STATE_ROOT ?? defaultSharedStateRoot(cwd, `cli-${process.pid}`);
+		options.customTools = [
+			...(options.customTools ?? []),
+			createRunSubAgentTool({
+				cwd,
+				agentDir,
+				definitions: createDemoSubAgentDefinitions(),
+				sharedStateRoot,
+			}),
+		];
+	} else if (isTruthyEnvFlag(process.env.PI_MULTI_AGENT_DIRECT_SUBAGENT)) {
 		options.customTools = [...(options.customTools ?? []), createDirectRunSubAgentTool()];
 	}
 
@@ -578,6 +597,8 @@ export async function main(args: string[], options?: MainOptions) {
 			sessionManager.buildSessionContext().messages.length > 0,
 			modelRegistry,
 			settingsManager,
+			cwd,
+			agentDir,
 		);
 		diagnostics.push(...sessionOptionDiagnostics);
 

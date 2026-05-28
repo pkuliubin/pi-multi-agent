@@ -9,7 +9,8 @@ export class MemorySharedStateManifest implements SharedStateManifest {
 	private readonly artifacts = new Map<string, SharedStateArtifact>();
 
 	get(path: string): SharedStateArtifact | undefined {
-		return this.artifacts.get(path);
+		const artifact = this.artifacts.get(path);
+		return artifact ? cloneArtifact(artifact) : undefined;
 	}
 
 	create(input: SharedStateCreateInput): SharedStateArtifact {
@@ -29,7 +30,7 @@ export class MemorySharedStateManifest implements SharedStateManifest {
 			metadata: input.metadata,
 		};
 		this.artifacts.set(input.path, artifact);
-		return artifact;
+		return cloneArtifact(artifact);
 	}
 
 	update(input: SharedStateUpdateInput): SharedStateArtifact {
@@ -51,10 +52,36 @@ export class MemorySharedStateManifest implements SharedStateManifest {
 			metadata: input.metadata ?? current.metadata,
 		};
 		this.artifacts.set(input.path, next);
-		return next;
+		return cloneArtifact(next);
 	}
 
 	list(space?: string): SharedStateArtifact[] {
-		return Array.from(this.artifacts.values()).filter((artifact) => !space || artifact.space === space);
+		return Array.from(this.artifacts.values())
+			.filter((artifact) => !space || artifact.space === space)
+			.map((artifact) => cloneArtifact(artifact));
 	}
+}
+
+function cloneArtifact(artifact: SharedStateArtifact): SharedStateArtifact {
+	return {
+		...artifact,
+		metadata: cloneMetadata(artifact.metadata),
+	};
+}
+
+function cloneMetadata(metadata: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+	if (!metadata) return undefined;
+	return cloneJsonValue(metadata) as Record<string, unknown>;
+}
+
+function cloneJsonValue(value: unknown): unknown {
+	if (Array.isArray(value)) {
+		return value.map((item) => cloneJsonValue(item));
+	}
+	if (value && typeof value === "object") {
+		return Object.fromEntries(
+			Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, cloneJsonValue(item)]),
+		);
+	}
+	return value;
 }

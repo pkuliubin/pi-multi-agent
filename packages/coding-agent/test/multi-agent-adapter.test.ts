@@ -1,10 +1,12 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Model } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai";
 import { type PiSubAgentDefinition, PiSubAgentInstance } from "@earendil-works/pi-multi-agent";
 import { afterEach, describe, expect, it } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
+import type { ToolDefinition } from "../src/core/extensions/types.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import { adaptAgentSession } from "../src/core/multi-agent/agent-session-adapter.ts";
 import { RestrictedSubAgentResourceLoader } from "../src/core/multi-agent/restricted-resource-loader.ts";
@@ -153,6 +155,87 @@ describe("coding-agent multi-agent adapter", () => {
 		expect(session.state.systemPrompt).toContain("sub prompt only");
 		expect(session.state.systemPrompt).not.toContain("PROJECT AGENTS SHOULD NOT LOAD");
 		expect(session.state.systemPrompt).not.toContain("CLAUDE SHOULD NOT LOAD");
+	});
+
+	it("rejects accessSurfaces without runner-mounted capability tools", async () => {
+		const cwd = createTempDir();
+		const faux = registerFauxProvider();
+		cleanupCallbacks.push(() => faux.unregister());
+		const factory = new CodingAgentSessionFactory();
+		await expect(
+			factory.create({
+				definition: {
+					id: "worker",
+					statePolicy: "session",
+					accessSurfaces: [{ type: "shared_state", grants: [{ space: "prd", permissions: ["list"] }] }],
+				},
+				cwd,
+				model: faux.getModel(),
+				thinkingLevel: "off",
+				sessionPolicy: "session",
+			}),
+		).rejects.toThrow("runner-mounted capability tools");
+	});
+
+	it("rejects non-array capability tools with a clear error", async () => {
+		const cwd = createTempDir();
+		const faux = registerFauxProvider();
+		cleanupCallbacks.push(() => faux.unregister());
+		const factory = new CodingAgentSessionFactory();
+		await expect(
+			factory.create({
+				definition: { id: "worker", statePolicy: "session" },
+				cwd,
+				model: faux.getModel(),
+				thinkingLevel: "off",
+				sessionPolicy: "session",
+				capabilities: { tools: "bad" as unknown as unknown[] },
+			}),
+		).rejects.toThrow("must be an array");
+	});
+
+	it("rejects malformed capability tools before accessing optional fields", async () => {
+		const cwd = createTempDir();
+		const faux = registerFauxProvider();
+		cleanupCallbacks.push(() => faux.unregister());
+		const factory = new CodingAgentSessionFactory();
+		await expect(
+			factory.create({
+				definition: { id: "worker", statePolicy: "session" },
+				cwd,
+				model: faux.getModel(),
+				thinkingLevel: "off",
+				sessionPolicy: "session",
+				capabilities: { tools: [{ name: "broken", execute: () => Promise.resolve() }] },
+			}),
+		).rejects.toThrow("ToolDefinition objects");
+	});
+
+	it("rejects OpenAI-compatible capability tool name collisions after sanitization", async () => {
+		const cwd = createTempDir();
+		const faux = registerFauxProvider();
+		cleanupCallbacks.push(() => faux.unregister());
+		const model: Model<"openai-completions"> = {
+			...faux.getModel(),
+			api: "openai-completions",
+		};
+		const tool = (name: string): ToolDefinition => ({
+			name,
+			label: name,
+			description: name,
+			parameters: {} as ToolDefinition["parameters"],
+			execute: async () => ({ content: [{ type: "text", text: "ok" }], details: undefined }),
+		});
+		await expect(
+			new CodingAgentSessionFactory().create({
+				definition: { id: "worker", statePolicy: "session" },
+				cwd,
+				model,
+				thinkingLevel: "off",
+				sessionPolicy: "session",
+				capabilities: { tools: [tool("db.query"), tool("db/query")] },
+			}),
+		).rejects.toThrow("tool name collision");
 	});
 
 	it("rejects unsupported definition resource metadata", async () => {

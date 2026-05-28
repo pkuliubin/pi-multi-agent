@@ -150,6 +150,32 @@ describe("shared_state tools", () => {
 		expect(result.content[0].text).not.toContain("prd/a.md");
 	});
 
+	it("lists manifest artifacts with limit when path is omitted", async () => {
+		const { tools } = toolSet();
+		await executeTool(tools["shared_state.write"], { path: "prd/a.md", content: "a" });
+		await executeTool(tools["shared_state.write"], { path: "prd/b.md", content: "b" });
+
+		const result = await executeTool(tools["shared_state.list"], { limit: 1 });
+
+		expect(result.content[0].text?.split("\n")).toHaveLength(1);
+	});
+
+	it("greps every authorized space when path is omitted", async () => {
+		const { tools } = toolSet({
+			grants: [
+				{ space: "prd", permissions: ["list", "read", "grep", "write", "edit"] },
+				{ space: "analysis", permissions: ["list", "read", "grep", "write", "edit"] },
+			],
+		});
+		await executeTool(tools["shared_state.write"], { path: "prd/a.md", content: "needle in prd" });
+		await executeTool(tools["shared_state.write"], { path: "analysis/b.md", content: "needle in analysis" });
+
+		const result = await executeTool(tools["shared_state.grep"], { pattern: "needle", literal: true });
+
+		expect(result.content[0].text).toContain("a.md");
+		expect(result.content[0].text).toContain("b.md");
+	});
+
 	it("lists only authorized manifest artifacts by default", async () => {
 		const manifest = new MemorySharedStateManifest();
 		const owner = toolSet({ manifest, agentId: "owner" });
@@ -253,7 +279,7 @@ describe("shared_state tools", () => {
 		).rejects.toThrow("artifact not found for expectedVersion");
 	});
 
-	it("greps the first authorized space by default when path is omitted", async () => {
+	it("greps all authorized spaces by default when path is omitted", async () => {
 		const { tools } = toolSet({
 			grants: [
 				{ space: "prd", permissions: ["list", "read", "grep", "write", "edit"] },
@@ -266,7 +292,22 @@ describe("shared_state tools", () => {
 		const result = await executeTool(tools["shared_state.grep"], { pattern: "needle", literal: true });
 
 		expect(result.content[0].text).toContain("requirements.md:2: needle");
-		expect(result.content[0].text).not.toContain("summary.md");
+		expect(result.content[0].text).toContain("summary.md:1: needle");
+	});
+
+	it("applies grep limit globally when path is omitted", async () => {
+		const { tools } = toolSet({
+			grants: [
+				{ space: "prd", permissions: ["list", "read", "grep", "write", "edit"] },
+				{ space: "analysis", permissions: ["list", "read", "grep", "write", "edit"] },
+			],
+		});
+		await executeTool(tools["shared_state.write"], { path: "prd/a.md", content: "needle in prd" });
+		await executeTool(tools["shared_state.write"], { path: "analysis/b.md", content: "needle in analysis" });
+
+		const result = await executeTool(tools["shared_state.grep"], { pattern: "needle", literal: true, limit: 1 });
+
+		expect(result.content[0].text?.split("\n")).toHaveLength(1);
 	});
 
 	it("exposes only shared_state tool names", () => {

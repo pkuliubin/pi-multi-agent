@@ -31,7 +31,9 @@ export function adaptAgentSession(session: AgentSession): AdaptedAgentSessionLik
 		waitForIdle: () => session.agent.waitForIdle(),
 		subscribe: (listener: AgentSessionLikeEventListener) =>
 			session.subscribe((event: AgentSessionEvent) => {
-				void listener(event);
+				Promise.resolve(listener(event)).catch((error: unknown) => {
+					console.error("Sub-agent event listener failed:", error);
+				});
 			}),
 		dispose: () => session.dispose(),
 		get resourceLoader() {

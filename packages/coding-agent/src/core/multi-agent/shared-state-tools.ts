@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type {
 	SharedStateArtifact,
@@ -15,6 +15,37 @@ import {
 	createReadToolDefinition,
 	createWriteToolDefinition,
 } from "../tools/index.ts";
+
+const mutationLocks = new Map<string, Promise<void>>();
+
+async function withSharedStateMutationLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
+	const previous = mutationLocks.get(path) ?? Promise.resolve();
+	let release = () => {};
+	const current = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const chained = previous.then(() => current);
+	mutationLocks.set(path, chained);
+	await previous;
+	try {
+		return await fn();
+	} finally {
+		release();
+		if (mutationLocks.get(path) === chained) mutationLocks.delete(path);
+	}
+}
+
+function readExistingFile(path: string): string | undefined {
+	return existsSync(path) ? readFileSync(path, "utf-8") : undefined;
+}
+
+function restoreFile(path: string, previous: string | undefined): void {
+	if (previous === undefined) {
+		if (existsSync(path)) rmSync(path, { force: true });
+		return;
+	}
+	writeFileSync(path, previous, "utf-8");
+}
 
 const sharedStateListSchema = Type.Object({
 	path: Type.Optional(
@@ -210,6 +241,23 @@ function formatArtifactList(artifacts: SharedStateArtifact[]): string {
 		.join("\n");
 }
 
+function getTextContent(result: { content: Array<{ type: string; text?: string }> }): string {
+	return result.content
+		.filter((content) => content.type === "text")
+		.map((content) => content.text ?? "")
+		.join("\n");
+}
+
+function mergeGrepOutputs(outputs: string[], limit: number | undefined): string {
+	const lines = outputs
+		.filter((output) => output && output !== "No matches found")
+		.flatMap((output) => output.split("\n"));
+	if (lines.length === 0) return "No matches found";
+	if (limit === undefined) return lines.join("\n");
+	const effectiveLimit = Math.max(1, limit);
+	return lines.slice(0, effectiveLimit).join("\n");
+}
+
 export function createSharedStateTools(options: CreateSharedStateToolsOptions): ToolDefinition[] {
 	const root = normalizeRoot(options.root);
 	mkdirSync(root, { recursive: true });
@@ -232,7 +280,8 @@ export function createSharedStateTools(options: CreateSharedStateToolsOptions): 
 				if (!params.path) {
 					const spaces = authorizedSpaces(options.grants, "list");
 					const artifacts = spaces.flatMap((space) => options.manifest.list(space));
-					return { content: [{ type: "text", text: formatArtifactList(artifacts) }], details: undefined };
+					const limited = params.limit === undefined ? artifacts : artifacts.slice(0, Math.max(0, params.limit));
+					return { content: [{ type: "text", text: formatArtifactList(limited) }], details: undefined };
 				}
 				const access = normalizeAccess(root, options.grants, params.path, "list");
 				return listTool.execute(toolCallId, { path: access.path, limit: params.limit }, signal, onUpdate, ctx);
@@ -267,7 +316,39 @@ export function createSharedStateTools(options: CreateSharedStateToolsOptions): 
 				if (!params.path) {
 					const spaces = authorizedSpaces(options.grants, "grep");
 					if (spaces.length === 0) throw new Error("Shared state permission denied for grep");
-					return grepTool.execute(toolCallId, { ...params, path: spaces[0] }, signal, onUpdate, ctx);
+					const results = await Promise.allSettled(
+						spaces.map((space) =>
+							grepTool.execute(
+								toolCallId,
+								{
+									...params,
+									path: space,
+									limit: params.limit === undefined ? undefined : Math.max(1, params.limit),
+								},
+								signal,
+								onUpdate,
+								ctx,
+							),
+						),
+					);
+					const outputs = results
+						.filter((result): result is PromiseFulfilledResult<Awaited<ReturnType<typeof grepTool.execute>>> => {
+							return result.status === "fulfilled";
+						})
+						.map((result) => getTextContent(result.value));
+					const failures = results.filter((result) => result.status === "rejected");
+					if (outputs.length === 0 && failures.length > 0) {
+						throw failures[0]?.reason;
+					}
+					return {
+						content: [
+							{
+								type: "text",
+								text: mergeGrepOutputs(outputs, params.limit),
+							},
+						],
+						details: undefined,
+					};
 				}
 				const access = normalizeAccess(root, options.grants, params.path, "grep");
 				return grepTool.execute(toolCallId, { ...params, path: access.path }, signal, onUpdate, ctx);
@@ -282,40 +363,49 @@ export function createSharedStateTools(options: CreateSharedStateToolsOptions): 
 			parameters: sharedStateWriteSchema,
 			async execute(toolCallId, params: SharedStateWriteInput, signal, onUpdate, ctx) {
 				const access = normalizeAccess(root, options.grants, params.path, "write");
-				const current = options.manifest.get(access.path);
-				if (current) {
-					assertCanOverwrite(options.agentId, access.grant, current);
-					if (params.expectedVersion !== undefined && params.expectedVersion !== current.version) {
-						throw new Error(
-							`Shared state version mismatch for ${access.path}: expected ${params.expectedVersion}, got ${current.version}`,
-						);
+				const absolutePath = ensureInsideRoot(root, access.path);
+				return withSharedStateMutationLock(absolutePath, async () => {
+					const current = options.manifest.get(access.path);
+					if (current) {
+						assertCanOverwrite(options.agentId, access.grant, current);
+						if (params.expectedVersion !== undefined && params.expectedVersion !== current.version) {
+							throw new Error(
+								`Shared state version mismatch for ${access.path}: expected ${params.expectedVersion}, got ${current.version}`,
+							);
+						}
+					} else if (params.expectedVersion !== undefined) {
+						throw new Error(`Shared state artifact not found for expectedVersion: ${access.path}`);
 					}
-				} else if (params.expectedVersion !== undefined) {
-					throw new Error(`Shared state artifact not found for expectedVersion: ${access.path}`);
-				}
-				const result = await writeTool.execute(
-					toolCallId,
-					{ path: access.path, content: params.content },
-					signal,
-					onUpdate,
-					ctx,
-				);
-				if (current) {
-					options.manifest.update({
-						path: access.path,
-						agentId: options.agentId,
-						expectedVersion: params.expectedVersion,
-						metadata: params.metadata,
-					});
-				} else {
-					options.manifest.create({
-						path: access.path,
-						space: access.space,
-						agentId: options.agentId,
-						metadata: params.metadata,
-					});
-				}
-				return result;
+					const previousContent = readExistingFile(absolutePath);
+					const result = await writeTool.execute(
+						toolCallId,
+						{ path: access.path, content: params.content },
+						signal,
+						onUpdate,
+						ctx,
+					);
+					try {
+						if (current) {
+							options.manifest.update({
+								path: access.path,
+								agentId: options.agentId,
+								expectedVersion: params.expectedVersion,
+								metadata: params.metadata,
+							});
+						} else {
+							options.manifest.create({
+								path: access.path,
+								space: access.space,
+								agentId: options.agentId,
+								metadata: params.metadata,
+							});
+						}
+					} catch (error) {
+						restoreFile(absolutePath, previousContent);
+						throw error;
+					}
+					return result;
+				});
 			},
 		}),
 		defineTool({
@@ -327,28 +417,37 @@ export function createSharedStateTools(options: CreateSharedStateToolsOptions): 
 			parameters: sharedStateEditSchema,
 			async execute(toolCallId, params: SharedStateEditInput, signal, onUpdate, ctx) {
 				const access = normalizeAccess(root, options.grants, params.path, "edit");
-				const current = options.manifest.get(access.path);
-				if (!current) throw new Error(`Shared state artifact not found: ${access.path}`);
-				assertCanEdit(options.agentId, access.grant, current);
-				if (params.expectedVersion !== undefined && params.expectedVersion !== current.version) {
-					throw new Error(
-						`Shared state version mismatch for ${access.path}: expected ${params.expectedVersion}, got ${current.version}`,
+				const absolutePath = ensureInsideRoot(root, access.path);
+				return withSharedStateMutationLock(absolutePath, async () => {
+					const current = options.manifest.get(access.path);
+					if (!current) throw new Error(`Shared state artifact not found: ${access.path}`);
+					assertCanEdit(options.agentId, access.grant, current);
+					if (params.expectedVersion !== undefined && params.expectedVersion !== current.version) {
+						throw new Error(
+							`Shared state version mismatch for ${access.path}: expected ${params.expectedVersion}, got ${current.version}`,
+						);
+					}
+					const previousContent = readExistingFile(absolutePath);
+					const result = await editTool.execute(
+						toolCallId,
+						{ path: access.path, edits: params.edits },
+						signal,
+						onUpdate,
+						ctx,
 					);
-				}
-				const result = await editTool.execute(
-					toolCallId,
-					{ path: access.path, edits: params.edits },
-					signal,
-					onUpdate,
-					ctx,
-				);
-				options.manifest.update({
-					path: access.path,
-					agentId: options.agentId,
-					expectedVersion: params.expectedVersion,
-					metadata: params.metadata,
+					try {
+						options.manifest.update({
+							path: access.path,
+							agentId: options.agentId,
+							expectedVersion: params.expectedVersion,
+							metadata: params.metadata,
+						});
+					} catch (error) {
+						restoreFile(absolutePath, previousContent);
+						throw error;
+					}
+					return result;
 				});
-				return result;
 			},
 		}),
 	];

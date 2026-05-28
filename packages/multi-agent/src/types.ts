@@ -1,5 +1,6 @@
 import type { AgentMessage, AgentState, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, ImageContent, Model } from "@earendil-works/pi-ai";
+import type { SubAgentAccessSurfaceDefinition, SubAgentCapabilities } from "./run-subagent-types.ts";
 
 export type SubAgentStatePolicy = "ephemeral" | "session" | "persistent";
 export type SubAgentPhase = "idle" | "listening" | "running" | "closed";
@@ -41,6 +42,7 @@ export interface PiSubAgentDefinition {
 	description?: string;
 	statePolicy: SubAgentStatePolicy;
 	systemPrompt?: string;
+	accessSurfaces?: SubAgentAccessSurfaceDefinition[];
 	metadata?: Record<string, unknown>;
 }
 
@@ -51,6 +53,7 @@ export interface CreateSubAgentSessionInput {
 	model?: Model<Api>;
 	thinkingLevel?: ThinkingLevel;
 	sessionPolicy: Extract<SubAgentStatePolicy, "ephemeral" | "session">;
+	capabilities?: SubAgentCapabilities;
 }
 
 export interface AgentSessionFactory {

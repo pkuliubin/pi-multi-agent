@@ -17,7 +17,8 @@ describe("MemorySharedStateManifest", () => {
 			createdAt: "t1",
 			updatedAt: "t1",
 		});
-		expect(manifest.get("prd/requirements.md")).toBe(artifact);
+		expect(manifest.get("prd/requirements.md")).toStrictEqual(artifact);
+		expect(manifest.get("prd/requirements.md")).not.toBe(artifact);
 	});
 
 	it("updates artifacts and increments version", () => {
@@ -37,6 +38,28 @@ describe("MemorySharedStateManifest", () => {
 			"version mismatch",
 		);
 		expect(manifest.update({ path: "prd/requirements.md", agentId: "planner", expectedVersion: 1 }).version).toBe(2);
+	});
+
+	it("returns cloned artifacts so external mutation cannot corrupt manifest", () => {
+		const manifest = new MemorySharedStateManifest();
+		const artifact = manifest.create({
+			path: "prd/a.md",
+			space: "prd",
+			agentId: "planner",
+			metadata: { stage: "draft", nested: { tags: ["alpha"] } },
+		});
+
+		artifact.version = 99;
+		if (artifact.metadata) artifact.metadata.stage = "mutated";
+		(artifact.metadata?.nested as { tags: string[] }).tags.push("mutated");
+		const listed = manifest.list("prd");
+		listed[0].ownerAgentId = "other";
+
+		expect(manifest.get("prd/a.md")).toMatchObject({
+			version: 1,
+			ownerAgentId: "planner",
+			metadata: { stage: "draft", nested: { tags: ["alpha"] } },
+		});
 	});
 
 	it("lists artifacts by space", () => {

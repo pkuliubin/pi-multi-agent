@@ -1088,6 +1088,9 @@ interface RunSubAgentInput {
   task: string;
   invocationId?: string;
   statePolicyOverride?: "ephemeral" | "session";
+  timeoutMs?: number;
+  model?: unknown;
+  thinkingLevel?: unknown;
 }
 ```
 
@@ -1127,6 +1130,25 @@ flowchart TD
 
 第一期不单独实现复杂 scheduler。
 
+Phase 4 实现状态：
+
+```text
+- 正式 run_subagent 已由 PI_MULTI_AGENT_RUN_SUBAGENT=1 注册到 coding-agent 主流程。
+- tool executionMode 为 parallel；主 agent 同一轮发多个 run_subagent calls 时，可复用 pi 的并行 tool execution。
+- tool result 展示 startedAt / endedAt / durationMs / message count，用于确认实际执行区间是否重叠。
+- demo agents 已挂载 Shared State access surface：pm-agent、engineering-agent、synthesis-agent。
+```
+
+可靠性约束已落入实现：
+
+```text
+- session 型 SubAgent 通过 pending instance 去重，避免并发首次调用创建两个 session。
+- 同一个 session instance 正在 running 时，第二个调用直接返回 failed result，不隐式排队。
+- run_subagent 每次调用传入当前主 session 的 model / thinkingLevel；session worker 在模型配置变化后重建 session。
+- timeout result 使用调用开始时的 startedAt / messageCountBefore，不在超时点伪造统计。
+- persistent 仍显式拒绝，第一期只支持 ephemeral / session。
+```
+
 ---
 
 ## 16. 第一阶段实现范围
@@ -1145,7 +1167,13 @@ packages/multi-agent
   - SharedStateManifest
   - MemorySharedStateManifest
   - shared_state.* tools
-  - run_subagent tool factory / executor
+  - run_subagent runner / tool result model
+
+packages/coding-agent
+  - CodingAgentSessionFactory / adapter
+  - restricted sub-agent resource loader
+  - shared_state.* ToolDefinition wrappers
+  - run_subagent ToolDefinition registration behind PI_MULTI_AGENT_RUN_SUBAGENT
 ```
 
 第一期不做：
