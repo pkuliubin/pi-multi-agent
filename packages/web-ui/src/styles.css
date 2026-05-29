@@ -1,7 +1,7 @@
 :root {
 	font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 	color: #1f2328;
-	background: #f6f4ef;
+	background: #f7f7f8;
 	font-synthesis: none;
 	text-rendering: optimizeLegibility;
 	-webkit-font-smoothing: antialiased;
@@ -17,9 +17,7 @@ body {
 	min-width: 320px;
 	height: 100dvh;
 	overflow: hidden;
-	background:
-		radial-gradient(circle at 16% 0%, rgba(220, 252, 231, 0.7), transparent 26rem),
-		linear-gradient(135deg, #fbfaf7 0%, #f3f0ea 52%, #ece8df 100%);
+	background: #f7f7f8;
 }
 
 #root {
@@ -98,8 +96,8 @@ h4 {
 .empty-panel {
 	border: 1px solid rgba(31, 35, 40, 0.08);
 	border-radius: 14px;
-	background: rgba(255, 255, 255, 0.72);
-	box-shadow: 0 14px 34px rgba(31, 35, 40, 0.06);
+	background: #ffffff;
+	box-shadow: none;
 }
 
 .topbar {
@@ -126,10 +124,10 @@ h4 {
 	padding: 2px 8px;
 	border: 0;
 	border-radius: 999px;
-	background: rgba(31, 35, 40, 0.05);
-	color: #5f6672;
-	font-size: 11px;
-	font-weight: 700;
+	background: #f1f1f2;
+	color: #68707c;
+	font-size: 12px;
+	font-weight: 600;
 	line-height: 1.2;
 	white-space: nowrap;
 }
@@ -167,8 +165,8 @@ h4 {
 	gap: 5px;
 	align-items: center;
 	color: #5f6672;
-	font-size: 11px;
-	font-weight: 700;
+	font-size: 12px;
+	font-weight: 600;
 }
 
 .session-controls select {
@@ -176,7 +174,7 @@ h4 {
 	padding: 0 8px;
 	border: 1px solid rgba(148, 163, 184, 0.22);
 	border-radius: 999px;
-	background: rgba(255, 255, 255, 0.64);
+	background: #ffffff;
 	color: #1f2328;
 }
 
@@ -220,16 +218,16 @@ h4 {
 }
 
 .agent-card.is-selected {
-	border-color: rgba(22, 163, 74, 0.28);
-	background: rgba(220, 252, 231, 0.62);
+	border-color: rgba(31, 35, 40, 0.12);
+	background: #ffffff;
 }
 
 .agent-card.phase-running {
-	border-color: rgba(22, 163, 74, 0.24);
+	border-color: rgba(37, 99, 235, 0.18);
 }
 
 .agent-card.phase-running.is-selected {
-	border-color: rgba(22, 163, 74, 0.4);
+	border-color: rgba(31, 35, 40, 0.14);
 }
 
 .agent-card.phase-failed,
@@ -256,12 +254,12 @@ h4 {
 	place-items: center;
 	width: 30px;
 	height: 30px;
-	border: 1px solid rgba(134, 239, 172, 0.34);
+	border: 1px solid rgba(31, 35, 40, 0.08);
 	border-radius: 10px;
-	background: rgba(220, 252, 231, 0.78);
-	color: #166534;
+	background: #f7f7f8;
+	color: #1f883d;
 	font-size: 13px;
-	font-weight: 800;
+	font-weight: 650;
 	line-height: 1;
 	flex: 0 0 auto;
 }
@@ -274,7 +272,7 @@ h4 {
 .agent-title h2 {
 	overflow: hidden;
 	font-size: 14px;
-	font-weight: 800;
+	font-weight: 650;
 	line-height: 1.15;
 	text-overflow: ellipsis;
 	white-space: nowrap;
@@ -284,7 +282,7 @@ h4 {
 	overflow: hidden;
 	color: #6b7280;
 	font-size: 12px;
-	line-height: 1.15;
+	line-height: 1.25;
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
@@ -306,8 +304,8 @@ h4 {
 }
 
 .agent-card.phase-completed .phase-badge {
-	background: rgba(22, 163, 74, 0.12);
-	color: #15803d;
+	background: #e8f5ec;
+	color: #1f883d;
 }
 
 .agent-card.phase-failed .phase-badge {
@@ -329,15 +327,15 @@ h4 {
 	min-height: 0;
 	padding: 8px 10px;
 	border-radius: 8px;
-	background: rgba(248, 250, 252, 0.72);
+	background: #f7f7f8;
 }
 
 .agent-current-action.running {
-	background: rgba(219, 234, 254, 0.72);
+	background: #f1f6ff;
 }
 
 .agent-current-action.completed {
-	background: rgba(220, 252, 231, 0.7);
+	background: #f1f1f2;
 }
 
 .agent-current-action.failed {
@@ -353,16 +351,17 @@ h4 {
 	overflow: hidden;
 	color: #1f2328;
 	font-size: 14px;
-	line-height: 1.2;
+	font-weight: 650;
+	line-height: 1.25;
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
 
 .agent-current-action span {
 	overflow: hidden;
-	color: #6b7280;
-	font-size: 13px;
-	line-height: 1.25;
+	color: #68707c;
+	font-size: 12px;
+	line-height: 1.35;
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
@@ -398,18 +397,18 @@ h4 {
 	padding: 0 14px;
 	border: 0;
 	border-radius: 999px;
-	background: rgba(31, 35, 40, 0.06);
+	background: #f1f1f2;
 	color: #1f2328;
 	font-size: 12px;
-	font-weight: 800;
+	font-weight: 650;
 	line-height: 1;
 	white-space: nowrap;
 }
 
 .agent-details-button[aria-pressed="true"] {
 	border-color: transparent;
-	background: rgba(220, 252, 231, 0.9);
-	color: #166534;
+	background: #f1f1f2;
+	color: #1f2328;
 }
 
 .agent-detail-panel {
@@ -447,7 +446,7 @@ h4 {
 .agent-detail-header p {
 	color: #6b7280;
 	font-size: 11px;
-	font-weight: 750;
+	font-weight: 600;
 	line-height: 1.2;
 	white-space: nowrap;
 }
@@ -469,7 +468,7 @@ h4 {
 .agent-detail-section h3 {
 	color: #6b7280;
 	font-size: 10px;
-	font-weight: 850;
+	font-weight: 650;
 	letter-spacing: 0.08em;
 	line-height: 1.2;
 	text-transform: uppercase;
@@ -478,7 +477,7 @@ h4 {
 .agent-preview {
 	padding: 8px;
 	border-radius: 8px;
-	background: rgba(248, 250, 252, 0.72);
+	background: #f7f7f8;
 	color: #2f3a4a;
 	font-size: 12px;
 	line-height: 1.45;
@@ -510,7 +509,7 @@ h4 {
 	gap: 8px;
 	padding: 8px;
 	border-radius: 12px;
-	background: rgba(248, 250, 252, 0.72);
+	background: #f7f7f8;
 }
 
 .agent-round-header {
@@ -536,7 +535,7 @@ h4 {
 	margin: 0;
 	color: #6b7280;
 	font-size: 11px;
-	font-weight: 750;
+	font-weight: 600;
 }
 
 .agent-round-tools {
@@ -556,7 +555,7 @@ h4 {
 	display: grid;
 	gap: 7px;
 	padding: 8px 10px;
-	border-left: 3px solid rgba(22, 163, 74, 0.32);
+	border-left: 2px solid rgba(31, 35, 40, 0.12);
 	background: transparent;
 }
 
@@ -570,15 +569,15 @@ h4 {
 	padding: 6px 8px;
 	border: 0;
 	border-radius: 9px;
-	background: rgba(229, 231, 235, 0.45);
+	background: #f1f1f2;
 	color: #374151;
 	font-size: 12px;
-	font-weight: 750;
+	font-weight: 600;
 	text-align: left;
 }
 
 .agent-tool-summary-row strong {
-	color: #15803d;
+	color: #1f883d;
 	font-size: 11px;
 }
 
@@ -590,7 +589,7 @@ h4 {
 	gap: 2px 6px;
 	padding: 6px;
 	border-radius: 9px;
-	background: rgba(248, 250, 252, 0.84);
+	background: #f7f7f8;
 	font-size: 11px;
 	line-height: 1.35;
 }
@@ -598,9 +597,9 @@ h4 {
 .agent-activity-list span,
 .agent-tool-list span {
 	overflow: hidden;
-	color: #15803d;
+	color: #1f883d;
 	font-size: 10px;
-	font-weight: 800;
+	font-weight: 650;
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
@@ -758,13 +757,13 @@ h4 {
 .artifact-row {
 	border: 0;
 	border-radius: 10px;
-	background: rgba(255, 255, 255, 0.58);
+	background: transparent;
 	overflow: hidden;
 }
 
 .artifact-row.is-selected {
-	border-color: rgba(22, 163, 74, 0.24);
-	background: rgba(220, 252, 231, 0.58);
+	border-color: transparent;
+	background: #f1f1f2;
 }
 
 .artifact-item {
@@ -782,13 +781,13 @@ h4 {
 }
 
 .artifact-item:hover {
-	background: rgba(220, 252, 231, 0.7);
+	background: #f1f1f2;
 }
 
 .artifact-path {
 	overflow: hidden;
 	font-size: 12px;
-	font-weight: 750;
+	font-weight: 600;
 	line-height: 1.2;
 	text-overflow: ellipsis;
 	white-space: nowrap;
@@ -805,7 +804,7 @@ h4 {
 	overflow: auto;
 	padding: 8px;
 	border-top: 0;
-	background: rgba(248, 250, 252, 0.78);
+	background: #f7f7f8;
 }
 
 .panel-subheader h3 {
@@ -819,7 +818,7 @@ h4 {
 .eyebrow {
 	color: #6b7280;
 	font-size: 10px;
-	font-weight: 800;
+	font-weight: 650;
 	letter-spacing: 0.08em;
 	text-transform: uppercase;
 }
@@ -843,7 +842,7 @@ h4 {
 
 .timeline-panel {
 	border-color: transparent;
-	background: rgba(255, 255, 255, 0.52);
+	background: #ffffff;
 	box-shadow: none;
 }
 
@@ -854,7 +853,7 @@ h4 {
 .timeline-list {
 	display: grid;
 	align-content: start;
-	gap: 8px;
+	gap: 12px;
 	padding-right: 2px;
 }
 
@@ -879,12 +878,12 @@ h4 {
 }
 
 .turn-user-query {
-	max-width: calc(100% - 64px);
+	max-width: min(860px, calc(100% - 96px));
 	margin-left: 54px;
 	padding: 7px 10px;
 	border-left: 2px solid rgba(96, 165, 250, 0.45);
 	border-radius: 10px;
-	background: rgba(239, 246, 255, 0.5);
+	background: #f7f7f8;
 }
 
 .turn-user-query p {
@@ -895,8 +894,9 @@ h4 {
 }
 
 .turn-assistant-output {
-	padding: 9px 10px;
-	border-left: 3px solid rgba(22, 163, 74, 0.42);
+	max-width: 920px;
+	padding: 10px 12px;
+	border-left: 2px solid rgba(31, 35, 40, 0.12);
 	border-radius: 0;
 	background: transparent;
 }
@@ -908,7 +908,7 @@ h4 {
 	justify-content: space-between;
 	color: #6b7280;
 	font-size: 10px;
-	font-weight: 800;
+	font-weight: 650;
 	letter-spacing: 0.06em;
 	line-height: 1.2;
 	text-transform: uppercase;
@@ -919,8 +919,8 @@ h4 {
 	gap: 7px;
 	min-width: 0;
 	color: #24292f;
-	font-size: 13px;
-	line-height: 1.55;
+	font-size: 14px;
+	line-height: 1.62;
 }
 
 .markdown-output h2,
@@ -950,6 +950,7 @@ h4 {
 }
 
 .markdown-output p {
+	margin: 0 0 4px;
 	white-space: pre-wrap;
 }
 
@@ -1004,7 +1005,7 @@ h4 {
 .markdown-table th {
 	background: rgba(31, 35, 40, 0.04);
 	color: #1f2328;
-	font-weight: 800;
+	font-weight: 650;
 }
 
 .markdown-table td {
@@ -1026,10 +1027,10 @@ h4 {
 	padding: 0 9px;
 	border: 0;
 	border-radius: 8px;
-	background: rgba(241, 245, 249, 0.78);
+	background: #f1f1f2;
 	color: #5f6672;
 	font-size: 11px;
-	font-weight: 800;
+	font-weight: 650;
 }
 
 .tool-detail-list {
@@ -1042,7 +1043,7 @@ h4 {
 
 .tool-detail-list li {
 	border-radius: 9px;
-	background: rgba(248, 250, 252, 0.78);
+	background: #f7f7f8;
 	overflow: hidden;
 }
 
@@ -1061,7 +1062,7 @@ h4 {
 .tool-detail-row span {
 	overflow: hidden;
 	font-size: 12px;
-	font-weight: 800;
+	font-weight: 650;
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
@@ -1096,7 +1097,7 @@ h4 {
 
 .tool-raw-details dt {
 	color: #15803d;
-	font-weight: 800;
+	font-weight: 650;
 }
 
 .tool-raw-details dd {
@@ -1152,7 +1153,7 @@ h4 {
 	min-height: 30px;
 	padding: 0 10px;
 	border-radius: 999px;
-	font-weight: 800;
+	font-weight: 650;
 	transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
 }
 
@@ -1164,7 +1165,7 @@ h4 {
 
 .ghost-button {
 	border: 0;
-	background: rgba(31, 35, 40, 0.06);
+	background: #f1f1f2;
 	color: #1f2328;
 }
 
@@ -1213,7 +1214,7 @@ h4 {
 
 .empty-title {
 	color: #1f2328;
-	font-weight: 800;
+	font-weight: 650;
 }
 
 .error-panel {
