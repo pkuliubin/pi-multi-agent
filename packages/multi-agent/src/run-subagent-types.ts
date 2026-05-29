@@ -52,9 +52,11 @@ export type CompactSubAgentEvent =
 			timestamp: number;
 			argsSummary?: string;
 			resultSummary?: string;
+			args?: unknown;
+			result?: unknown;
 			isError?: boolean;
 	  }
-	| { type: "message_end"; preview: string; timestamp: number };
+	| { type: "message_end"; preview: string; fullText?: string; timestamp: number };
 
 export interface RunSubAgentProgressSummary {
 	currentPhase: "starting" | "running" | "completed" | "failed" | "aborted";

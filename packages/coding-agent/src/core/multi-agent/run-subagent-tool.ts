@@ -145,7 +145,7 @@ function isAssistantTextMessage(
 	);
 }
 
-function previewTextFromEnvelope(envelope: SubAgentEventEnvelope): string | undefined {
+function assistantTextFromEnvelope(envelope: SubAgentEventEnvelope): string | undefined {
 	const event = envelope.event;
 	if (event.type !== "message_end") return undefined;
 	const message = event.message;
@@ -155,7 +155,7 @@ function previewTextFromEnvelope(envelope: SubAgentEventEnvelope): string | unde
 		.map((item) => item.text)
 		.join("\n")
 		.trim();
-	return text ? truncatePreview(text) : undefined;
+	return text || undefined;
 }
 
 function truncateSummary(text: string, maxLength: number): string {
@@ -203,13 +203,15 @@ function compactEventFromEnvelope(envelope: SubAgentEventEnvelope): CompactSubAg
 			timestamp,
 			argsSummary: summarizeToolArgs(event),
 			resultSummary: summarizeToolResult(event),
+			args: "args" in event ? event.args : undefined,
+			result: "result" in event ? event.result : undefined,
 			isError: event.type === "tool_execution_end" ? Boolean(event.isError) || undefined : undefined,
 		};
 	}
 	if (event.type === "message_end") {
-		const preview = previewTextFromEnvelope(envelope);
-		if (!preview) return undefined;
-		return { type: "message_end", preview, timestamp };
+		const fullText = assistantTextFromEnvelope(envelope);
+		if (!fullText) return undefined;
+		return { type: "message_end", preview: truncatePreview(fullText), fullText, timestamp };
 	}
 	return undefined;
 }
