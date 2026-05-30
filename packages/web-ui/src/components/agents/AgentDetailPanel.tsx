@@ -22,13 +22,25 @@ interface AgentRound {
 export function AgentDetailPanel({ agent, history, loading, error }: AgentDetailPanelProps) {
 	const [expandedToolId, setExpandedToolId] = useState<string | null>(null);
 	const [expandedRoundTools, setExpandedRoundTools] = useState<Set<string>>(() => new Set());
+	const [expandedRoundIds, setExpandedRoundIds] = useState<Set<string>>(() => new Set());
 	const items = history?.items ?? [];
 	const rounds = useMemo(() => groupHistoryIntoRounds(items, agent.phase), [items, agent.phase]);
+	const latestRoundId = rounds.at(-1)?.id ?? null;
 	const toolCount = rounds.reduce((total, round) => total + round.tools.length, 0) || agent.completedTools.length;
 	const eventCount = items.length || agent.eventCount;
 
 	function toggleRoundTools(roundId: string) {
 		setExpandedRoundTools((current) => {
+			const next = new Set(current);
+			if (next.has(roundId)) next.delete(roundId);
+			else next.add(roundId);
+			return next;
+		});
+	}
+
+	function toggleRound(roundId: string) {
+		if (roundId === latestRoundId) return;
+		setExpandedRoundIds((current) => {
 			const next = new Set(current);
 			if (next.has(roundId)) next.delete(roundId);
 			else next.add(roundId);
@@ -56,23 +68,34 @@ export function AgentDetailPanel({ agent, history, loading, error }: AgentDetail
 					<ol className="agent-round-list" aria-label="Agent execution rounds">
 						{rounds.map((round) => {
 							const toolsExpanded = expandedRoundTools.has(round.id);
+							const isLatestRound = round.id === latestRoundId;
+							const roundExpanded = isLatestRound || expandedRoundIds.has(round.id);
+							const preview = roundPreview(round);
 							return (
-								<li key={round.id} className="agent-round-card">
+								<li key={round.id} className={`agent-round-card${roundExpanded ? " is-expanded" : ""}`}>
 									<header className="agent-round-header">
-										<div>
+										<button
+											type="button"
+											className="agent-round-toggle"
+											onClick={() => toggleRound(round.id)}
+											aria-expanded={roundExpanded}
+										>
 											<strong>Round {round.index}</strong>
 											<span>{round.status}</span>
-										</div>
+											{preview ? <small>{preview}</small> : null}
+										</button>
 										<p>{roundTimeLabel(round)}</p>
 									</header>
 
-									{round.messages.length > 0 ? (
-										<RoundAssistantOutput messages={round.messages} />
-									) : (
-										<p className="agent-round-waiting">Waiting for assistant output.</p>
-									)}
+									{roundExpanded ? (
+										round.messages.length > 0 ? (
+											<RoundAssistantOutput messages={round.messages} />
+										) : (
+											<p className="agent-round-waiting">Waiting for assistant output.</p>
+										)
+									) : null}
 
-									{round.tools.length > 0 ? (
+									{roundExpanded && round.tools.length > 0 ? (
 										<section className="agent-round-tools" aria-label={`Round ${round.index} tool calls`}>
 											<button
 												type="button"
@@ -242,6 +265,13 @@ function createRound(index: number, startedAt: string | null, status: AgentCard[
 		messages: [],
 		tools: [],
 	};
+}
+
+function roundPreview(round: AgentRound): string | null {
+	const text = agentMessagesText(round.messages).replace(/\s+/g, " ").trim();
+	if (text) return text.length > 96 ? `${text.slice(0, 96)}...` : text;
+	if (round.tools.length > 0) return roundToolSummary(round.tools);
+	return null;
 }
 
 function roundToolSummary(tools: Array<Extract<AgentHistoryItem, { type: "tool_call" }>>): string {

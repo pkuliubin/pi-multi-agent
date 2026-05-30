@@ -30,8 +30,8 @@ export const AgentCard = memo(function AgentCard({ agent, selected, onSelect }: 
 			</div>
 
 			<div className={`agent-current-action ${currentActivity.status}`}>
-				<strong>{currentActivity.label}</strong>
-				{currentActivity.detail ? <span>{currentActivity.detail}</span> : null}
+				<span className="agent-action-label">{currentActivity.label}</span>
+				{currentActivity.detail ? <strong>{currentActivity.detail}</strong> : null}
 			</div>
 
 			<div className="agent-card-footer">
