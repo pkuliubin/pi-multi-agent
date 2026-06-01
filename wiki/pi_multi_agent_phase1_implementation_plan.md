@@ -1090,6 +1090,16 @@ PI_MULTI_AGENT_RUN_SUBAGENT=1 PI_MULTI_AGENT_SHARED_STATE_ROOT=/tmp/pi-phase5-cl
 
 TUI mode：同样用 DeepSeek，观察 `run_subagent` result 的 `startedAt / endedAt / durationMs / sharedStateRoot`，确认并行区间重叠且最终文件位于 `/tmp/pi-phase5-cli-state`。
 
+Smoke test 建议每次使用新的 shared-state root，或先 `rm -rf` 清理旧 root。`sharedStateRoot/.manifest.json` 会持久化 artifact owner/version/provenance；如果复用旧 root 但手动删除了文件，可能出现 manifest 与文件不一致，导致后续写入被 owner/version 保护拒绝。
+
+如果不设置 `PI_MULTI_AGENT_SHARED_STATE_ROOT`，默认路径为：
+
+```text
+<cwd>/.pi/multi-agent/shared-state/<mainSessionId>
+```
+
+该默认路径跟随主 session id，适合正常使用和 resume；固定 `/tmp/...` root 更适合一次性 smoke。
+
 当前边界：
 
 ```text
@@ -1698,6 +1708,7 @@ Phase 7 已完成第一版事件桥接式 observability。目标不是新增 Bus
 - progress 包含 currentPhase / activeTool / completedTools / lastAssistantPreview / eventCount / recentEvents
 - recentEvents 使用 rolling window，默认保留最近 8 条高价值事件
 - tool start/end 展示 argsSummary / resultSummary，并保留受控 args/result 投影供 UI 展开
+- sub-agent 内部 tool error 会以 internalToolErrors / lastToolError 出现在 progress 和最终 result 中
 - final result 保留 result/sharedStateRoot/definitionSource，并附带 progress
 ```
 
@@ -1707,6 +1718,7 @@ TUI 验收：
 - TUI multi-subagent workflow 已验证正常使用
 - run_subagent tool block 能显示 startedAt / endedAt / durationMs / messages / sharedStateRoot
 - progress update 能显示 phase、activeTool、tool_execution_start/end、assistant preview
+- 内部 tool error 在最终 run_subagent result 中仍可见，不会被 completed finalText 覆盖
 - pm-agent / engineering-agent / synthesis-agent 可完成 shared-state 多轮协作并产出最终 artifact
 ```
 

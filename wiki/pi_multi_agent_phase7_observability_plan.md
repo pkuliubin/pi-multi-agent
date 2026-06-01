@@ -218,6 +218,7 @@ tool_execution_end:
 ### 当前展示语义
 
 - TUI 中，`run_subagent` tool block 会在执行过程中持续刷新 progress snapshot。
+- 如果 sub-agent 内部 tool 调用失败但最终仍返回 completed，progress 和最终 result 都会显示 `internalToolErrors` 与 `lastToolError`，避免 completed 结果掩盖内部失败。
 - CLI `--mode json` 中，可以看到 `tool_execution_start / tool_execution_update / tool_execution_end`，其中 `partialResult.details.progress` 是 compact summary。
 - 普通 CLI text mode 仍以最终输出为主，不保证像 TUI 一样逐步刷新展示。
 
@@ -227,6 +228,7 @@ tool_execution_end:
 - progress update 不是 source of truth；完整 trace 仍以 sub-agent 自己的 session file 为准
 - recentEvents 不保存原始 agent loop event 或 partialResult 大对象
 - recentEvents 当前可包含 tool args/result 与 assistant fullText 的投影字段，用于 UI 可观测性；完整 trace 仍以 sub-agent session file 为准
+- internalToolErrors / lastToolError 只是可观测摘要，不改变 run_subagent completed/failed 判定
 - 相同 progress snapshot 不重复发送 update
 - SUB_AGENT_BUSY 不产生 sub-agent internal event，但会生成 failed/busy progress summary
 - 主 session 仍只保存 run_subagent tool result，不保存 sub-agent 内部完整 messages/tool results
@@ -322,6 +324,7 @@ npm run check
 ```text
 - TUI 中已观察到 run_subagent 工具块出现流式 progress update
 - TUI multi-subagent workflow 已验证可正常使用，能看到 run_subagent result 与 progress，并产出 shared-state artifact
+- TUI 已验证内部 tool error 在中间 progress 与最终 run_subagent result 中都可见
 - Web UI / Web Backend 演示链路已能从 run_subagent progress 更新 agent cards / details；前端可观察整体运行效果
 - CLI --mode json 中已观察到 run_subagent 的 tool_execution_update，且 partialResult.details.progress 为 compact summary
 - 子 agent 内部 shared_state 工具调用未混入主 session transcript

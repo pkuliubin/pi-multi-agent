@@ -1401,6 +1401,7 @@ sub-agent agent loop event
 ```text
 - observer 是 best-effort；展示失败不影响 sub-agent 执行
 - progress 展示 currentPhase / activeTool / completedTools / assistant preview / recentEvents
+- sub-agent 内部 tool error 会显示为 internalToolErrors / lastToolError，并保留到最终 run_subagent result
 - TUI 可直接通过现有 tool streaming 机制观察 sub-agent progress
 - Web demo 通过 web-backend 把 progress 归约为 agent card / detail panel
 - progress 不是 source of truth；完整 session trace 仍以 sub-agent JSONL session file 为准
@@ -1554,6 +1555,14 @@ prd/pm.md、analysis/engineering.md、summary/final.md 是 Shared State logical 
 这些 logical path 不是 repo cwd 相对路径，sub-agent 应通过 shared_state.* tools 访问。
 run_subagent result 会展示 sharedStateRoot，方便主 agent 或人工调试时定位物理文件。
 physical root 不作为 sub-agent API 暴露；sub-agent 协作协议仍以 logical path 为准。
+```
+
+Smoke / 调试建议：
+
+```text
+固定 PI_MULTI_AGENT_SHARED_STATE_ROOT 适合人工 smoke，但每次测试前建议 rm -rf 清理旧 root。
+不设置 PI_MULTI_AGENT_SHARED_STATE_ROOT 时，默认 root 为 <cwd>/.pi/multi-agent/shared-state/<mainSessionId>。
+sharedStateRoot/.manifest.json 会持久化 owner/version/provenance；复用旧 root 时不要只删 artifact 文件而保留旧 manifest。
 ```
 
 ### 9.1 Phase 5.1 完成状态
