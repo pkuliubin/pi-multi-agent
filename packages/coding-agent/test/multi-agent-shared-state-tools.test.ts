@@ -219,6 +219,31 @@ describe("shared_state tools", () => {
 		expect(result.content[0].text).toContain("analysis/b.md");
 	});
 
+	it("uses wildcard read grants when owned-space grants only allow write and edit", async () => {
+		const root = createTempRoot();
+		const manifest = new MemorySharedStateManifest();
+		const owner = toolSet({
+			root,
+			manifest,
+			agentId: "owner",
+			grants: [{ space: "analysis", permissions: ["list", "read", "grep", "write", "edit"] }],
+		});
+		await executeTool(owner.tools["shared_state.write"], { path: "analysis/b.md", content: "analysis" });
+		const readerWriter = toolSet({
+			root,
+			manifest,
+			agentId: "reader-writer",
+			grants: [
+				{ space: "*", permissions: ["list", "read", "grep"] },
+				{ space: "analysis", permissions: ["write", "edit"] },
+			],
+		});
+
+		const result = await executeTool(readerWriter.tools["shared_state.read"], { path: "analysis/b.md" });
+
+		expect(result.content[0].text).toContain("analysis");
+	});
+
 	it("greps manifest spaces by default with wildcard grep grant", async () => {
 		const root = createTempRoot();
 		const manifest = new MemorySharedStateManifest();

@@ -1489,7 +1489,7 @@ project: .pi/agents/*.md
 user:    ~/.pi/agent/agents/*.md
 ```
 
-格式采用 Claude-like Markdown + YAML frontmatter，便于迁移和手工编辑；但 Pi 不直接照搬 Claude Code 的工具权限语义。Frontmatter 中 `tools` 只是迁移兼容层，正式权限模型仍是 `accessSurfaces` / `grants`。
+格式采用 Claude-like Markdown + YAML frontmatter，便于迁移和手工编辑；但 Pi 不直接照搬 Claude Code 的工具权限语义。Frontmatter 中 `tools` 只是迁移兼容层。推荐产品写法是 `sharedState.writableSpaces`，完整 `accessSurfaces` / `grants` 保留为高级权限 escape hatch。
 
 推荐格式：
 
@@ -1499,15 +1499,33 @@ id: engineering-agent
 name: Engineering Agent
 description: Maintains implementation analysis
 statePolicy: session
+sharedState:
+  writableSpaces: [analysis]
+---
+You are engineering-agent...
+```
+
+`sharedState.writableSpaces` 会编译成：
+
+```text
+space: "*"        permissions: [list, read, grep]
+space: analysis   permissions: [write, edit]
+```
+
+也就是说，Shared State sub-agent 默认可读取和搜索当前 Shared State 的所有 spaces，但只对自己声明的 writable spaces 有 write/edit 权限。
+
+高级权限写法仍可使用：
+
+```md
+---
+id: restricted-agent
 accessSurfaces:
   - type: shared_state
     grants:
       - space: analysis
         permissions: [list, read, grep, write, edit]
-      - space: prd
-        permissions: [list, read, grep]
 ---
-You are engineering-agent...
+Restricted prompt...
 ```
 
 兼容格式：
@@ -1525,7 +1543,7 @@ Write artifacts through Shared State.
 ```text
 支持的 tools 映射仅限 shared_state.list/read/grep/write/edit。
 Bash/WebSearch/WebFetch/MCP/Read/Grep/Glob 等 Claude-like tools 会 warning + skip。
-未声明 accessSurfaces 且 tools 无法安全映射时，agent 仍可加载，但不会获得额外 tools。
+未声明 sharedState/accessSurfaces 且 tools 无法安全映射时，agent 仍可加载，但不会获得额外 tools。
 Sub-agent 仍使用 restricted resource loader，不继承主 session 的 tools、skills、prompts、extensions、AGENTS.md 或 CLAUDE.md。
 ```
 

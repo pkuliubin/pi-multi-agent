@@ -1434,11 +1434,8 @@ description: Product manager sub-agent
 statePolicy: session
 model: inherit
 color: blue
-accessSurfaces:
-  - type: shared_state
-    grants:
-      - space: prd
-        permissions: [list, read, grep, write, edit]
+sharedState:
+  writableSpaces: [prd]
 ---
 System prompt body here.
 ```
@@ -1457,7 +1454,9 @@ run_subagent promptGuidelines 根据实际 registry 生成可用 agent 列表，
 权限策略：
 
 ```text
-正式写法：accessSurfaces + grants。
+推荐产品写法：sharedState.writableSpaces。
+sharedState.writableSpaces 会自动授予所有 Shared State spaces 的 list/read/grep，并只对声明的 writable spaces 授予 write/edit。
+高级写法：accessSurfaces + grants，适合更严格或非默认权限。
 迁移兼容：tools 可写 shared_state.list/read/grep/write/edit。
 Claude-like 高风险或未知 tools（Bash、WebSearch、WebFetch、Read/Grep/Glob、MCP tools 等）加载时 warning + skip。
 普通文件工具不会自动映射为 repo 文件系统权限。

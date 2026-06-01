@@ -24,6 +24,7 @@ interface AgentFrontmatter extends Record<string, unknown> {
 	tools?: unknown;
 	accessSurfaces?: unknown;
 	grants?: unknown;
+	sharedState?: unknown;
 }
 
 export interface SubAgentDefinitionResource {
@@ -142,6 +143,9 @@ function parseAccessSurfaces(
 	const explicit = parseExplicitAccessSurfaces(frontmatter.accessSurfaces, filePath, diagnostics);
 	if (explicit.length > 0) surfaces.push(...explicit);
 
+	const sharedStateShortcut = parseSharedStateShortcut(frontmatter.sharedState, filePath, diagnostics);
+	if (sharedStateShortcut) surfaces.push(sharedStateShortcut);
+
 	const topLevelGrants = parseSharedStateGrants(frontmatter.grants, filePath, diagnostics);
 	if (topLevelGrants.length > 0) surfaces.push({ type: "shared_state", grants: topLevelGrants });
 
@@ -171,6 +175,46 @@ function parseExplicitAccessSurfaces(
 		if (grants.length > 0) surfaces.push({ type: "shared_state", grants });
 	}
 	return surfaces;
+}
+
+function parseSharedStateShortcut(
+	value: unknown,
+	filePath: string,
+	diagnostics: ResourceDiagnostic[],
+): SubAgentAccessSurfaceDefinition | undefined {
+	if (value === undefined || value === null) return undefined;
+	if (!isRecord(value)) {
+		diagnostics.push({ type: "warning", message: "sharedState must be an object", path: filePath });
+		return undefined;
+	}
+	if (value.writableSpaces === undefined || value.writableSpaces === null) return undefined;
+	if (!Array.isArray(value.writableSpaces)) {
+		diagnostics.push({ type: "warning", message: "sharedState.writableSpaces must be an array", path: filePath });
+		return undefined;
+	}
+	const writableSpaces: string[] = [];
+	for (const space of value.writableSpaces) {
+		if (typeof space !== "string" || space.trim().length === 0) {
+			diagnostics.push({
+				type: "warning",
+				message: `Invalid sharedState writable space skipped: ${String(space)}`,
+				path: filePath,
+			});
+			continue;
+		}
+		writableSpaces.push(space.trim());
+	}
+	if (writableSpaces.length === 0) return undefined;
+	return {
+		type: "shared_state",
+		grants: [
+			{ space: "*", permissions: ["list", "read", "grep"] },
+			...Array.from(new Set(writableSpaces)).map((space) => ({
+				space,
+				permissions: ["write", "edit"] satisfies SharedStatePermission[],
+			})),
+		],
+	};
 }
 
 function parseSharedStateGrants(

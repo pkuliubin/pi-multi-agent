@@ -171,8 +171,17 @@ function getSpace(relativePath: string): string {
 	return space;
 }
 
-function findGrant(grants: SharedStateGrant[], space: string): SharedStateGrant | undefined {
-	return grants.find((grant) => grant.space === space) ?? grants.find((grant) => grant.space === "*");
+function findGrant(
+	grants: SharedStateGrant[],
+	space: string,
+	permission: SharedStatePermission,
+): SharedStateGrant | undefined {
+	return (
+		grants.find((grant) => grant.space === space && hasPermission(grant, permission)) ??
+		grants.find((grant) => grant.space === "*" && hasPermission(grant, permission)) ??
+		grants.find((grant) => grant.space === space) ??
+		grants.find((grant) => grant.space === "*")
+	);
 }
 
 function hasPermission(grant: SharedStateGrant, permission: SharedStatePermission): boolean {
@@ -200,7 +209,7 @@ function normalizeAccess(
 	const relativePath = normalizeSharedPath(inputPath, options);
 	if (!relativePath) throw new Error("Shared state path is required");
 	const space = getSpace(relativePath);
-	const grant = assertPermission(findGrant(grants, space), permission, space);
+	const grant = assertPermission(findGrant(grants, space, permission), permission, space);
 	ensureInsideRoot(root, relativePath);
 	return { path: relativePath, space, grant };
 }

@@ -79,6 +79,115 @@ Write shared state.
 		]);
 	});
 
+	it("maps sharedState writableSpaces to read-all and write-owned grants", () => {
+		const result = parseSubAgentDefinition(
+			`---
+id: pm-agent
+sharedState:
+  writableSpaces: [prd]
+---
+Maintain product direction.
+`,
+			"/tmp/pm-agent.md",
+		);
+
+		expect(result.diagnostics).toEqual([]);
+		expect(result.definition?.accessSurfaces).toEqual([
+			{
+				type: "shared_state",
+				grants: [
+					{ space: "*", permissions: ["list", "read", "grep"] },
+					{ space: "prd", permissions: ["write", "edit"] },
+				],
+			},
+		]);
+	});
+
+	it("maps multiple sharedState writableSpaces", () => {
+		const result = parseSubAgentDefinition(
+			`---
+id: multi-writer
+sharedState:
+  writableSpaces: [prd, analysis, prd]
+---
+Maintain multiple artifacts.
+`,
+			"/tmp/multi-writer.md",
+		);
+
+		expect(result.diagnostics).toEqual([]);
+		expect(result.definition?.accessSurfaces).toEqual([
+			{
+				type: "shared_state",
+				grants: [
+					{ space: "*", permissions: ["list", "read", "grep"] },
+					{ space: "prd", permissions: ["write", "edit"] },
+					{ space: "analysis", permissions: ["write", "edit"] },
+				],
+			},
+		]);
+	});
+
+	it("merges sharedState writableSpaces with explicit grants", () => {
+		const result = parseSubAgentDefinition(
+			`---
+id: pm-agent
+sharedState:
+  writableSpaces: [prd]
+accessSurfaces:
+  - type: shared_state
+    grants:
+      - space: prd
+        permissions: [read]
+      - space: research
+        permissions: [read]
+---
+Maintain product direction.
+`,
+			"/tmp/pm-agent.md",
+		);
+
+		expect(result.diagnostics).toEqual([]);
+		expect(result.definition?.accessSurfaces).toEqual([
+			{
+				type: "shared_state",
+				grants: [
+					{ space: "prd", permissions: ["read", "write", "edit"] },
+					{ space: "research", permissions: ["read"] },
+					{ space: "*", permissions: ["list", "read", "grep"] },
+				],
+			},
+		]);
+	});
+
+	it("warns on invalid sharedState writableSpaces without blocking the agent", () => {
+		const result = parseSubAgentDefinition(
+			`---
+id: writer-agent
+sharedState:
+  writableSpaces: [prd, "", 42]
+---
+Maintain shared state.
+`,
+			"/tmp/writer.md",
+		);
+
+		expect(result.definition?.id).toBe("writer-agent");
+		expect(result.definition?.accessSurfaces).toEqual([
+			{
+				type: "shared_state",
+				grants: [
+					{ space: "*", permissions: ["list", "read", "grep"] },
+					{ space: "prd", permissions: ["write", "edit"] },
+				],
+			},
+		]);
+		expect(result.diagnostics.map((diagnostic) => diagnostic.message)).toEqual([
+			"Invalid sharedState writable space skipped: ",
+			"Invalid sharedState writable space skipped: 42",
+		]);
+	});
+
 	it("reports invalid definitions without throwing", () => {
 		const result = parseSubAgentDefinition(
 			`---

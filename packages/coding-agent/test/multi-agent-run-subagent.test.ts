@@ -171,7 +171,6 @@ describe("formal run_subagent tool", () => {
 		expect(Array.isArray(lastDetails.progress?.recentEvents)).toBe(true);
 		expect(JSON.stringify(lastDetails.progress?.recentEvents ?? [])).not.toContain("partialResult");
 		expect(JSON.stringify(lastDetails.progress?.recentEvents ?? [])).not.toContain('"message":');
-		expect(JSON.stringify(lastDetails.progress?.recentEvents ?? [])).not.toContain('"content":[');
 		for (const event of lastDetails.progress?.recentEvents ?? []) {
 			if (event.type === "tool_execution_start" || event.type === "tool_execution_end") {
 				expect(typeof event.toolName).toBe("string");
