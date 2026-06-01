@@ -326,8 +326,9 @@ export function createRunSubAgentTool(options: CreateRunSubAgentToolOptions): To
 		name: "run_subagent",
 		label: "run_subagent",
 		description:
-			"Run a registered Pi sub-agent. Sub-agents have isolated sessions and only explicitly granted capabilities such as shared_state tools. For multi-round Shared State work, call sub-agents in explicit rounds and require them to write concise artifacts to their assigned paths.",
-		promptSnippet: "Run registered sub-agents with isolated sessions and explicit Shared State access",
+			"Run a registered Pi sub-agent. Sub-agents have isolated sessions, default read-only filesystem tools (read/grep/find/ls), and explicitly granted capabilities such as shared_state tools. For multi-round Shared State work, call sub-agents in explicit rounds and require them to write concise artifacts to their assigned paths.",
+		promptSnippet:
+			"Run registered sub-agents with isolated sessions, read-only filesystem tools, and explicit Shared State access",
 		promptGuidelines: buildPromptGuidelines(options.definitions),
 		parameters: runSubAgentSchema,
 		executionMode: "parallel",
@@ -428,8 +429,10 @@ function buildPromptGuidelines(definitions: PiSubAgentDefinition[]): string[] {
 	);
 	const guidelines = [
 		`Use run_subagent when the user asks to delegate work to a registered sub-agent. Registered sub-agents: ${agentList || "none"}.`,
+		"Sub-agents can use ordinary read, grep, find, and ls tools for read-only filesystem inspection using the same cwd and absolute path behavior as the main session.",
+		"Sub-agents do not have ordinary write, edit, or bash tools by default; ask them to write collaboration artifacts through shared_state.* tools.",
 		"For Shared State collaboration, do not ask sub-agents for long prose in the tool result; ask them to write concise artifacts and return the path they changed.",
-		"Shared State paths such as prd/pm.md, analysis/engineering.md, and summary/final.md are logical artifact paths, not repository-relative paths. Do not use ordinary read/bash tools on those logical paths unless you first combine them with the sharedStateRoot shown in the run_subagent result.",
+		"Shared State paths such as prd/pm.md, analysis/engineering.md, and summary/final.md are logical artifact paths, not repository-relative paths. Do not use ordinary read/grep/find/ls tools on those logical paths unless you first combine them with the sharedStateRoot shown in the run_subagent result.",
 		"Do not run a dependent sub-agent before the artifact it needs exists. If the user asks for multiple rounds, wait for each round's run_subagent results before starting the next dependent round.",
 		"Always require concise artifacts, roughly 8-15 lines, unless the user explicitly asks for a long document.",
 	];

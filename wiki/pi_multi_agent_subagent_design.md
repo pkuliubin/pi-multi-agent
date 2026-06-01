@@ -851,7 +851,9 @@ shared_state.edit
 - path 不能包含 escape：`..`、绝对路径、home path、Windows drive path。
 - path 第一段必须是授权 `space`。
 - 所有文件操作限制在 shared state root 内。
-- 不直接暴露原始 repo `read/write/edit/grep/ls` 工具。
+- Shared State logical path 不等同于 repo path；必须通过 `shared_state.*` 访问。
+- Sub-agent 另有默认只读文件工具 `read/grep/find/ls`，用于读取真实 cwd/绝对路径文件。
+- 不默认暴露原始 repo `write/edit/bash` 工具。
 
 ### 10.6 当前实现状态与验证
 
@@ -1544,8 +1546,9 @@ Write artifacts through Shared State.
 ```text
 支持的 tools 映射仅限 shared_state.list/read/grep/write/edit。
 Bash/WebSearch/WebFetch/MCP/Read/Grep/Glob 等 Claude-like tools 会 warning + skip。
-未声明 sharedState/accessSurfaces 且 tools 无法安全映射时，agent 仍可加载，但不会获得额外 tools。
-Sub-agent 仍使用 restricted resource loader，不继承主 session 的 tools、skills、prompts、extensions、AGENTS.md 或 CLAUDE.md。
+未声明 sharedState/accessSurfaces 且 tools 无法安全映射时，agent 仍可加载，并仍获得默认只读文件工具 read/grep/find/ls。
+Sub-agent 仍使用 restricted resource loader，不继承主 session 的 skills、prompts、extensions、AGENTS.md 或 CLAUDE.md。
+Sub-agent 默认不开放 write/edit/bash；需要写协作产物时应使用 shared_state.write/edit。
 ```
 
 Shared State 路径边界：

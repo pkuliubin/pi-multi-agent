@@ -7,6 +7,7 @@ import type { ToolDefinition } from "../extensions/types.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import { createAgentSession } from "../sdk.ts";
 import { SessionManager } from "../session-manager.ts";
+import { createReadOnlyToolDefinitions } from "../tools/index.ts";
 import { type AdaptedAgentSessionLike, adaptAgentSession } from "./agent-session-adapter.ts";
 import { RestrictedSubAgentResourceLoader } from "./restricted-resource-loader.ts";
 
@@ -62,6 +63,13 @@ function getCapabilityTools(input: CreateSubAgentSessionInput): ToolDefinition[]
 	if (!tools.every(isToolDefinition)) {
 		throw new Error("SubAgent capability tools must be coding-agent ToolDefinition objects");
 	}
+	return tools;
+}
+
+function getSubAgentCustomTools(input: CreateSubAgentSessionInput): ToolDefinition[] {
+	const readOnlyTools = createReadOnlyToolDefinitions(input.cwd);
+	const capabilityTools = getCapabilityTools(input) ?? [];
+	const tools = [...readOnlyTools, ...capabilityTools];
 	if (input.model?.api === "openai-completions") {
 		const sanitizedTools = tools.map((tool) => {
 			const sanitizedName = sanitizeOpenAiToolName(tool.name);
@@ -75,6 +83,7 @@ function getCapabilityTools(input: CreateSubAgentSessionInput): ToolDefinition[]
 		assertUniqueToolNames(sanitizedTools);
 		return sanitizedTools;
 	}
+	assertUniqueToolNames(tools);
 	return tools;
 }
 
@@ -94,7 +103,7 @@ export class CodingAgentSessionFactory implements AgentSessionFactory {
 	async create(input: CreateSubAgentSessionInput): Promise<AdaptedAgentSessionLike> {
 		assertNoUnsupportedDefinitionResources(input.definition.metadata);
 
-		const customTools = getCapabilityTools(input);
+		const customTools = getSubAgentCustomTools(input);
 
 		const { session } = await createAgentSession({
 			cwd: input.cwd,

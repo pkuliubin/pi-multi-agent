@@ -1710,6 +1710,7 @@ Phase 7 已完成第一版事件桥接式 observability。目标不是新增 Bus
 - tool start/end 展示 argsSummary / resultSummary，并保留受控 args/result 投影供 UI 展开
 - sub-agent 内部 tool error 会以 internalToolErrors / lastToolError 出现在 progress 和最终 result 中
 - final result 保留 result/sharedStateRoot/definitionSource，并附带 progress
+- sub-agent 默认开启只读文件工具 read/grep/find/ls；write/edit/bash/skills/extensions/context files 仍默认关闭
 ```
 
 TUI 验收：
@@ -1717,7 +1718,7 @@ TUI 验收：
 ```text
 - TUI multi-subagent workflow 已验证正常使用
 - run_subagent tool block 能显示 startedAt / endedAt / durationMs / messages / sharedStateRoot
-- progress update 能显示 phase、activeTool、tool_execution_start/end、assistant preview
+- progress update 能显示 phase、activeTool、tool_execution_start/end、assistant preview，包括 sub-agent 内部 read/grep/find/ls 调用
 - 内部 tool error 在最终 run_subagent result 中仍可见，不会被 completed finalText 覆盖
 - pm-agent / engineering-agent / synthesis-agent 可完成 shared-state 多轮协作并产出最终 artifact
 ```

@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
@@ -186,6 +186,78 @@ describe("formal run_subagent tool", () => {
 				}
 			}
 		}
+		session.dispose();
+	});
+
+	it("streams ordinary read-only filesystem tool events from sub-agents", async () => {
+		const cwd = createTempDir();
+		const agentDir = join(cwd, "agent");
+		mkdirSync(join(cwd, "src"), { recursive: true });
+		writeFileSync(join(cwd, "src", "sample.ts"), "export const marker = 'progress-readonly';\n", "utf-8");
+		const { faux, modelRegistry } = setupModelRegistry();
+		const settingsManager = SettingsManager.create(cwd, agentDir);
+		const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager });
+		await resourceLoader.reload();
+		const updates: Array<{ text: string; details: unknown }> = [];
+		const tool = createObservedRunSubAgentTool(
+			createRunSubAgentTool({
+				cwd,
+				agentDir,
+				sharedStateRoot: join(cwd, "shared-state"),
+				manifest: new MemorySharedStateManifest(),
+				definitions: [
+					{
+						id: "reader",
+						statePolicy: "session",
+						systemPrompt: "Use read, grep, find, and ls to inspect src.",
+					},
+				],
+			}),
+			updates,
+		);
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			model: faux.getModel(),
+			modelRegistry,
+			settingsManager,
+			sessionManager: SessionManager.inMemory(cwd),
+			resourceLoader,
+			noTools: "all",
+			customTools: [tool],
+		});
+		faux.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall("run_subagent", { agentId: "reader", task: "inspect src" }, { id: "call-main" }),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage(
+				[
+					fauxToolCall("ls", { path: "src" }, { id: "sub-ls" }),
+					fauxToolCall("read", { path: "src/sample.ts" }, { id: "sub-read" }),
+					fauxToolCall("grep", { pattern: "progress-readonly", path: "src", literal: true }, { id: "sub-grep" }),
+					fauxToolCall("find", { pattern: "*.ts", path: "src" }, { id: "sub-find" }),
+				],
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("inspected src"),
+			fauxAssistantMessage("main saw reader result"),
+		]);
+
+		await session.prompt("delegate to reader");
+
+		for (const toolName of ["ls", "read", "grep", "find"]) {
+			expect(updates.some((update) => update.text.includes(`tool_execution_start: ${toolName}`))).toBe(true);
+			expect(updates.some((update) => update.text.includes(`tool_execution_end: ${toolName}`))).toBe(true);
+		}
+		const toolResult = session.messages.find((message) => isRunSubAgentToolResult(message));
+		const completedToolNames = toolResult?.details?.progress?.completedTools.map(
+			(tool: { toolName: string }) => tool.toolName,
+		);
+		expect(new Set(completedToolNames)).toEqual(new Set(["ls", "read", "grep", "find"]));
+		expect(
+			session.messages.filter((message) => message.role === "toolResult" && message.toolName !== "run_subagent"),
+		).toEqual([]);
 		session.dispose();
 	});
 

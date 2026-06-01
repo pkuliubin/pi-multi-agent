@@ -1,7 +1,7 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Model } from "@earendil-works/pi-ai";
+import type { Model, ToolResultMessage } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai";
 import { type PiSubAgentDefinition, PiSubAgentInstance } from "@earendil-works/pi-multi-agent";
 import { afterEach, describe, expect, it } from "vitest";
@@ -11,7 +11,7 @@ import { ModelRegistry } from "../src/core/model-registry.ts";
 import { adaptAgentSession } from "../src/core/multi-agent/agent-session-adapter.ts";
 import { RestrictedSubAgentResourceLoader } from "../src/core/multi-agent/restricted-resource-loader.ts";
 import { CodingAgentSessionFactory } from "../src/core/multi-agent/session-factory.ts";
-import { createHarness } from "./suite/harness.ts";
+import { createHarness, getMessageText } from "./suite/harness.ts";
 
 const createdDirs: string[] = [];
 const cleanupCallbacks: Array<() => void> = [];
@@ -64,6 +64,18 @@ async function createFauxSubAgent(definition: PiSubAgentDefinition = baseDefinit
 	return { cwd, faux, session, subAgent: new PiSubAgentInstance(definition, session) };
 }
 
+function toolResult(messages: unknown[], toolName: string): ToolResultMessage | undefined {
+	return messages.find(
+		(message): message is ToolResultMessage =>
+			typeof message === "object" &&
+			message !== null &&
+			"role" in message &&
+			(message as { role: unknown }).role === "toolResult" &&
+			"toolName" in message &&
+			(message as { toolName: unknown }).toolName === toolName,
+	);
+}
+
 afterEach(() => {
 	while (cleanupCallbacks.length > 0) {
 		cleanupCallbacks.pop()?.();
@@ -108,16 +120,63 @@ describe("coding-agent multi-agent adapter", () => {
 		expect(mainHarness.session.messages).toEqual([]);
 	});
 
-	it("starts with no active tools and no discovered resources", async () => {
+	it("starts with read-only filesystem tools and no discovered resources", async () => {
 		const { session } = await createFauxSubAgent();
 
-		expect(session.getActiveToolNames()).toEqual([]);
+		expect(session.getActiveToolNames()).toEqual(["read", "grep", "find", "ls"]);
 		expect(session.resourceLoader).toBeInstanceOf(RestrictedSubAgentResourceLoader);
 		expect(session.resourceLoader.getSkills().skills).toEqual([]);
 		expect(session.resourceLoader.getPrompts().prompts).toEqual([]);
 		expect(session.resourceLoader.getThemes().themes).toEqual([]);
 		expect(session.resourceLoader.getAgentsFiles().agentsFiles).toEqual([]);
 		expect(session.resourceLoader.getExtensions().extensions).toEqual([]);
+	});
+
+	it("can use read-only filesystem tools but not write, edit, or bash", async () => {
+		const definition = baseDefinition({
+			systemPrompt: "Use read, grep, find, and ls when asked. Never summarize without tools.",
+		});
+		const { cwd, faux, session, subAgent } = await createFauxSubAgent(definition);
+		mkdirSync(join(cwd, "src"), { recursive: true });
+		writeFileSync(join(cwd, "src", "sample.ts"), "export const marker = 'sub-agent-readonly';\n", "utf-8");
+		const absolutePath = join(cwd, "src", "sample.ts");
+		faux.setResponses([
+			fauxAssistantMessage(
+				[
+					{ type: "toolCall", id: "sub-ls", name: "ls", arguments: { path: "src" } },
+					{ type: "toolCall", id: "sub-read", name: "read", arguments: { path: absolutePath } },
+					{
+						type: "toolCall",
+						id: "sub-grep",
+						name: "grep",
+						arguments: { pattern: "sub-agent-readonly", path: "src", literal: true },
+					},
+					{ type: "toolCall", id: "sub-find", name: "find", arguments: { pattern: "*.ts", path: "src" } },
+					{
+						type: "toolCall",
+						id: "sub-write",
+						name: "write",
+						arguments: { path: "src/created.ts", content: "nope" },
+					},
+					{ type: "toolCall", id: "sub-edit", name: "edit", arguments: { path: "src/sample.ts", edits: [] } },
+					{ type: "toolCall", id: "sub-bash", name: "bash", arguments: { command: "echo nope" } },
+				],
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("readonly tools checked"),
+		]);
+
+		const result = await subAgent.invoke("inspect src");
+
+		expect(result.status).toBe("completed");
+		const toolResults = session.state.messages.filter((message) => message.role === "toolResult");
+		expect(getMessageText(toolResult(toolResults, "ls"))).toContain("sample.ts");
+		expect(getMessageText(toolResult(toolResults, "read"))).toContain("sub-agent-readonly");
+		expect(getMessageText(toolResult(toolResults, "grep"))).toContain("sub-agent-readonly");
+		expect(getMessageText(toolResult(toolResults, "find"))).toContain("sample.ts");
+		expect(getMessageText(toolResult(toolResults, "write"))).toContain("Tool write not found");
+		expect(getMessageText(toolResult(toolResults, "edit"))).toContain("Tool edit not found");
+		expect(getMessageText(toolResult(toolResults, "bash"))).toContain("Tool bash not found");
 	});
 
 	it("does not load AGENTS.md or CLAUDE.md from cwd", async () => {
