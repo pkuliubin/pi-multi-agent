@@ -88,14 +88,26 @@ interface RunSubAgentProgressSummary {
 }
 ```
 
-`recentEvents` 默认保留最近 8 条压缩事件，不保存原始 event payload：
+`recentEvents` 默认保留最近 8 条压缩事件，不保存原始 agent loop event。当前实现允许在压缩事件里保留受控的 tool 可观测字段，方便 TUI / Web UI 展开查看具体工具执行：
 
 ```ts
 type CompactSubAgentEvent =
   | { type: "agent_start" | "agent_end"; timestamp: number }
-  | { type: "tool_execution_start" | "tool_execution_end"; toolName: string; toolCallId: string; timestamp: number; isError?: boolean }
-  | { type: "message_end"; preview: string; timestamp: number };
+  | {
+      type: "tool_execution_start" | "tool_execution_end";
+      toolName: string;
+      toolCallId: string;
+      timestamp: number;
+      argsSummary?: string;
+      resultSummary?: string;
+      args?: unknown;
+      result?: unknown;
+      isError?: boolean;
+    }
+  | { type: "message_end"; preview: string; fullText?: string; timestamp: number };
 ```
+
+说明：`args/result/fullText` 不是 source of truth，也不是完整审计日志；它们只是为了当前 UI 可观测性提供的受控投影。完整 trace 仍以 sub-agent 自己的持久 session file 为准。
 
 `currentPhase` 状态规则：
 
@@ -156,7 +168,7 @@ onEvent(envelope)
   -> if snapshot changed: onUpdate({ content, details: { progress } })
 ```
 
-final tool result 保持现有 `result/sharedStateRoot/definitionSource`，额外带 `progress` summary。完整 trace 不进入 details。
+final tool result 保持现有 `result/sharedStateRoot/definitionSource`，额外带 `progress` summary。完整 trace 不进入 details；details 中的 tool args/result 只作为 UI 展开的当前投影。
 
 ## Phase 7 实现结果
 
@@ -183,7 +195,7 @@ Phase 7 已完成第一版 `run_subagent` 事件桥接式 observability，重点
 - recentEvents
 ```
 
-其中 `recentEvents` 只保存压缩后的高价值事件：
+其中 `recentEvents` 保存压缩后的高价值事件：
 
 ```text
 agent_start / agent_end
@@ -201,6 +213,8 @@ tool_execution_end:
   resultSummary (默认截断到前 100 个字符)
 ```
 
+为了让用户能看到具体 sub-agent tool 执行，当前压缩事件也会保留 tool `args/result` 与 assistant `fullText` 的投影字段，供 Web UI agent detail 展开。这个选择是产品体验上的折中：优先保证可观测性，同时用 rolling window 控制事件数量。
+
 ### 当前展示语义
 
 - TUI 中，`run_subagent` tool block 会在执行过程中持续刷新 progress snapshot。
@@ -211,10 +225,39 @@ tool_execution_end:
 
 ```text
 - progress update 不是 source of truth；完整 trace 仍以 sub-agent 自己的 session file 为准
-- recentEvents 不保存原始 message/result/partialResult 大对象
+- recentEvents 不保存原始 agent loop event 或 partialResult 大对象
+- recentEvents 当前可包含 tool args/result 与 assistant fullText 的投影字段，用于 UI 可观测性；完整 trace 仍以 sub-agent session file 为准
 - 相同 progress snapshot 不重复发送 update
 - SUB_AGENT_BUSY 不产生 sub-agent internal event，但会生成 failed/busy progress summary
 - 主 session 仍只保存 run_subagent tool result，不保存 sub-agent 内部完整 messages/tool results
+```
+
+### Web UI / Web Backend 现状
+
+当前 Web 演示链路已接入 Phase 7 progress：
+
+```text
+sub-agent event
+  -> run_subagent progress snapshot
+  -> main session tool_execution_update
+  -> web-backend reduceRunSubagentProgress()
+  -> SSE agent.updated
+  -> web-ui agent card / agent detail
+```
+
+`packages/web-backend` 会把 `run_subagent` progress 归约成 `AgentCard`、agent history 和 shared-state refresh signal。`packages/web-ui` 已能展示 agent card、active tool、completed tools、assistant preview，并在 detail panel 中展开工具 args/result。
+
+这条 Web 链路是 demo / bridge 层，不是 multi-agent 底层必须依赖的正式 UI 形态。未来如果做替代 TUI 的桌面 GUI，可以直接接 Pi runtime / session API / role-session index，不一定复用当前 HTTP + SSE web-backend。
+
+### 当前已知打磨项
+
+这些不是 Phase 7 blocker：
+
+```text
+- Web backend 当前从 rolling recentEvents 生成 agent history；长任务下建议后续给 CompactSubAgentEvent 增加稳定 id，减少 history 去重依赖 timestamp / fallback sequence。
+- progress snapshot 是完整快照，不是增量事件流；长任务下应继续关注单个 args/result/fullText 投影大小。
+- activeTool 当前只表达一个工具；这与当前 sub-agent 串行 tool loop 匹配，未来若支持并行 tool 再扩展。
+- shared_state.changed 对 run_subagent_completed 仍使用 paths: [] 全量刷新，简单可靠但不够精确。
 ```
 
 ## Test Plan
@@ -237,7 +280,7 @@ tool_execution_end:
 - run_subagent 执行期间调用 onUpdate。
 - update content 是 progress snapshot，包含 tool start/end 和 assistant preview。
 - update details 是 compact summary，不包含完整原始 events 数组。
-- recentEvents 只包含压缩字段，不包含原始 message/result/partialResult 大对象。
+- recentEvents 只包含压缩后的高价值事件，不包含原始 agent loop event 或 partialResult 大对象。
 - tool_execution_start / tool_execution_end 事件包含 argsSummary / resultSummary。
 - resultSummary 默认截断到前 100 个字符。
 - 相同 progress snapshot 不重复触发 update。
@@ -278,8 +321,20 @@ npm run check
 
 ```text
 - TUI 中已观察到 run_subagent 工具块出现流式 progress update
+- TUI multi-subagent workflow 已验证可正常使用，能看到 run_subagent result 与 progress，并产出 shared-state artifact
+- Web UI / Web Backend 演示链路已能从 run_subagent progress 更新 agent cards / details；前端可观察整体运行效果
 - CLI --mode json 中已观察到 run_subagent 的 tool_execution_update，且 partialResult.details.progress 为 compact summary
 - 子 agent 内部 shared_state 工具调用未混入主 session transcript
+```
+
+### Phase 7 当前结论
+
+Phase 7 已进入收尾状态：底层事件桥接、TUI 展示、RPC/Web 演示链路都已跑通。后续若继续投入，优先级不应是重做 event system，而是围绕 UI 投影做小幅打磨：
+
+```text
+1. 为 CompactSubAgentEvent 增加稳定 id，降低 Web agent history 去重成本。
+2. 为 args/result/fullText 投影补大小上限或更明确的展示策略。
+3. 如果未来做正式桌面 GUI，直接基于 runtime/session/role-session API 设计多 runtime 视图，而不是把当前 web-backend 当成最终形态。
 ```
 
 ## Non-goals

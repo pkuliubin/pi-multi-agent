@@ -1,23 +1,48 @@
 # 代码地图
 
-这份文档的目标不是逐行解释实现，而是先给出一张可导航的仓库地图，方便后续快速定位代码和理解模块边界。
+这份文档用于快速定位仓库中的主要模块、入口文件和职责边界。它不是逐行实现说明，而是后续深入理解代码时的导航索引。
 
 ## 1. 仓库总览
 
-仓库是一个 monorepo，核心依赖链大致是：
+当前仓库是一个 monorepo，核心包包括：
 
 ```text
-packages/coding-agent -> packages/agent -> packages/ai
-packages/coding-agent -> packages/tui
-packages/agent -> packages/ai
+packages/ai
+packages/agent
+packages/multi-agent
+packages/tui
+packages/coding-agent
+packages/web-backend
+packages/web-ui
 ```
 
-职责拆分上可以粗略理解为：
+主要依赖关系可以粗略理解为：
 
-- `packages/ai`：统一 LLM / 图像能力层，负责 provider、stream、model、oauth、tool 相关基础能力
-- `packages/agent`：通用 agent 运行时，负责消息循环、tool 调用、会话/持久化/压缩等能力
-- `packages/tui`：终端 UI 组件库，负责输入、渲染、选项列表、编辑器、图片和键盘行为
-- `packages/coding-agent`：面向用户的完整 CLI，负责交互模式、session 管理、扩展系统、工具层封装和导出能力
+```text
+packages/ai
+  ↑
+packages/agent
+  ↑
+packages/multi-agent
+  ↑
+packages/coding-agent
+  ↑
+packages/web-backend
+  ↑
+packages/web-ui
+
+packages/coding-agent also depends on packages/tui
+```
+
+职责分层：
+
+- `packages/ai`：统一 LLM / 图像 / OAuth / provider 抽象
+- `packages/agent`：通用 agent loop、tool call、session/harness 基础能力
+- `packages/multi-agent`：sub-agent、role session、shared state 等多智能体原语
+- `packages/tui`：终端 UI 组件库
+- `packages/coding-agent`：面向用户的 Pi CLI、SDK、工具、扩展、session 管理
+- `packages/web-backend`：Web UI 后端桥接层，连接 live RPC / replay / shared state
+- `packages/web-ui`：React Web UI，展示 session、timeline、agents、shared state
 
 ---
 
@@ -25,878 +50,773 @@ packages/agent -> packages/ai
 
 ### `package.json`
 
-仓库级脚本入口和 workspace 定义。
+仓库级 workspace 和脚本入口。
 
-- 定义所有 package 的 workspace
-- 提供 `build` / `check` / `test` / `release:*` 等总入口
-- 维护根级版本和发布流程
+- `workspaces` 覆盖 `packages/*` 以及若干 extension examples
+- `build` 按顺序构建 `tui -> ai -> agent -> multi-agent -> coding-agent -> web-backend -> web-ui`
+- `check` 包含 Biome、依赖 pin、TS import、shrinkwrap、TypeScript、web-ui check、browser smoke
+- `release:*`、`publish:*`、`release:local` 是发布相关入口
 
 ### `tsconfig.base.json`
 
-整个仓库共享的 TypeScript 编译约束。
+仓库共享 TypeScript 约束。
 
-- 统一 `Node16` 模块策略
+- `module` / `moduleResolution` 使用 `Node16`
+- 开启 `strict`
 - 开启 `erasableSyntaxOnly`
-- 约束所有包的类型和输出风格
+- 所有 package 的 build tsconfig 基本继承这里
 
 ### `scripts/`
 
-仓库级运维脚本目录，偏构建、检查、发布和统计。
+仓库级检查、发布和统计脚本。
 
-- `check-*`：质量检查
-- `generate-*`：生成 shrinkwrap / 模型数据等
-- `release.mjs`：发布流程编排
+- `check-pinned-deps.mjs`：校验直接依赖 pin 版本
+- `check-ts-relative-imports.mjs`：校验 TS 相对导入规则
+- `generate-coding-agent-shrinkwrap.mjs`：生成/检查 coding-agent shrinkwrap
 - `local-release.mjs`：本地 release smoke test
-- `profile-*`：性能/行为分析
+- `release.mjs`：正式 release 编排
+- `profile-coding-agent-node.mjs`：TUI/RPC profiling
+- `check-browser-smoke.mjs` / `browser-smoke-entry.ts`：浏览器 smoke check
 
 ### `wiki/`
 
-用于沉淀架构理解、研究笔记和代码地图。
+面向开发者的分析和架构沉淀。
 
-- 当前这类文档放这里最合适
-- 适合作为后续深入分析的索引页
+- `code_map.md`：当前代码地图
+- 其他 wiki 文件用于专题分析，不一定和源码同步
 
 ---
 
 ## 3. `packages/ai`
 
-统一 LLM API 层。这个包是最底层的 provider 抽象，其他包会直接或间接依赖它。
+统一 LLM API 层。它定义 provider、model、message、tool、stream、image、OAuth 等底层抽象。
 
-### `packages/ai/src/index.ts`
+### 核心入口
 
-对外总出口。
+- `src/index.ts`：包对外总出口
+- `src/stream.ts`：`stream` / `complete` / `streamSimple` / `completeSimple`
+- `src/types.ts`：LLM message、model、tool、usage、transport、image 等基础类型
+- `src/api-registry.ts`：文本 provider 注册中心
+- `src/images-api-registry.ts`：图像 provider 注册中心
+- `src/models.ts` / `src/models.generated.ts`：模型元数据入口和生成数据
+- `src/image-models.ts` / `src/image-models.generated.ts`：图像模型元数据
+- `src/env-api-keys.ts`：环境变量 API key 解析
+- `src/session-resources.ts`：session 级资源清理
+- `src/oauth.ts`：OAuth 对外入口
+- `src/cli.ts`：`pi-ai` OAuth 登录 CLI
 
-- 汇总导出 models、providers、stream、types、oauth、images 等能力
-- 是上层包最常用的 `pi-ai` 入口
+### `src/providers/`
 
-### `packages/ai/src/stream.ts`
+具体 LLM provider 实现。
 
-最核心的流式调用入口。
+- `register-builtins.ts`：注册内建 provider，是 `stream.ts` 的隐式依赖
+- `openai-responses.ts`：OpenAI Responses 实现
+- `openai-completions.ts`：OpenAI-compatible completions 实现
+- `openai-codex-responses.ts`：OpenAI Codex / subscription provider
+- `azure-openai-responses.ts`：Azure Responses 适配
+- `anthropic.ts`：Anthropic Messages 适配
+- `google.ts`：Google Generative AI 适配
+- `google-vertex.ts`：Vertex AI 适配
+- `google-shared.ts`：Google / Vertex 共享转换逻辑
+- `amazon-bedrock.ts`：Bedrock Converse Stream 适配
+- `mistral.ts`：Mistral Conversations 适配
+- `cloudflare.ts`：Cloudflare Workers AI / Gateway 适配
+- `transform-messages.ts`：跨 provider message 转换
+- `openai-responses-shared.ts`：Responses 系共享逻辑
+- `openai-prompt-cache.ts`：OpenAI prompt cache 辅助
+- `simple-options.ts`：统一简化 stream options
+- `github-copilot-headers.ts`：Copilot 头部辅助
+- `faux.ts`：测试用 provider
+- `images/`：图像生成 provider
 
-- `stream` / `complete`
-- `streamSimple` / `completeSimple`
-- 在注册表里按 `model.api` 分发到具体 provider
+### `src/utils/`
 
-### `packages/ai/src/api-registry.ts`
+底层工具。
 
-provider 注册中心。
-
-- 注册 / 查询 / 清理 API provider
-- 做 `api` 与具体 stream 函数的绑定
-- 是 provider 插件化的基础
-
-### `packages/ai/src/types.ts`
-
-所有 LLM 相关通用类型定义。
-
-- `Model` / `Context` / `Message`
-- `Provider` / `Api`
-- `ToolCall` / `ThinkingLevel` / `Transport`
-- 图像、usage、stream options 等基础协议
-
-### `packages/ai/src/models.ts`、`packages/ai/src/models.generated.ts`
-
-模型定义和模型注册数据。
-
-- 负责 provider/model 元数据
-- `models.generated.ts` 是生成物，不应手工改
-
-### `packages/ai/src/image-models.ts`、`packages/ai/src/image-models.generated.ts`
-
-图像模型能力数据。
-
-- 用于区分哪些模型支持图片输入或图片生成
-- 同样有生成文件
-
-### `packages/ai/src/images.ts`、`packages/ai/src/images-api-registry.ts`
-
-图像输入/生成相关入口。
-
-- 图像 API 的统一抽象
-- 图像 provider 注册和调用
-
-### `packages/ai/src/oauth.ts`
-
-OAuth 登录与 token 相关统一入口。
-
-- 对上层暴露 provider 登录能力
-- 供 CLI 或自动化认证流程使用
-
-### `packages/ai/src/providers/`
-
-具体 provider 实现目录。
-
-- `openai-responses.ts`：OpenAI Responses API
-- `openai-completions.ts`：传统 completions/compat 层
-- `openai-codex-responses.ts`：OpenAI Codex 相关响应层
-- `anthropic.ts`：Anthropic 消息流
-- `google.ts` / `google-vertex.ts`：Google / Vertex 适配
-- `mistral.ts`：Mistral 适配
-- `amazon-bedrock.ts`：Bedrock 适配
-- `azure-openai-responses.ts`：Azure OpenAI Responses 适配
-- `cloudflare.ts`：Cloudflare 相关 provider
-- `faux.ts`：测试/本地假 provider
-- `register-builtins.ts`：注册默认 provider
-- `transform-messages.ts`：跨 provider message 变换
-- `openai-prompt-cache.ts`：OpenAI prompt cache 相关辅助
-- `simple-options.ts`：简化选项整理
-- `github-copilot-headers.ts`：Copilot 请求头辅助
-
-#### 关键文件补充
-
-- `providers/register-builtins.ts`：把内建 provider 注册进全局 registry，通常是应用启动时的隐式入口
-- `providers/openai-responses.ts`：OpenAI Responses 主要实现，理解 provider 兼容层时优先看这里
-- `providers/openai-completions.ts`：旧式 OpenAI 兼容实现，很多 provider shim 会参考它
-- `providers/anthropic.ts`：Anthropic 专用流式实现和兼容逻辑
-- `providers/google.ts`：Google Generative AI 的主实现
-- `providers/google-shared.ts`：Google / Vertex 共享的消息和 thinking 逻辑
-- `providers/google-vertex.ts`：Vertex AI 适配层
-- `providers/amazon-bedrock.ts`：Bedrock 适配与签名/传输差异处理
-- `providers/openai-codex-responses.ts`：Codex 订阅/OAuth 相关 provider 逻辑
-- `providers/faux.ts`：测试用假 provider，适合理解接口最小实现
-
-### `packages/ai/src/utils/`
-
-provider 和流式协议的基础工具层。
-
-- `event-stream.ts`：事件流封装
-- `json-parse.ts`：流式 JSON 解析
-- `validation.ts`：工具/参数校验
-- `overflow.ts`：上下文溢出处理
-- `hash.ts`：缓存或标识哈希
-- `headers.ts`：请求头处理
+- `event-stream.ts`：`AssistantMessageEventStream` 实现
+- `json-parse.ts`：partial JSON / streaming JSON 处理
+- `validation.ts`：tool argument 校验
+- `overflow.ts`：context overflow 判断
+- `diagnostics.ts`：assistant message diagnostics
+- `headers.ts`：HTTP headers 辅助
+- `node-http-proxy.ts`：Node proxy 支持
 - `sanitize-unicode.ts`：Unicode 清理
-- `node-http-proxy.ts`：Node HTTP 代理支持
-- `oauth/`：OAuth PKCE、device code、provider-specific login 流程
+- `oauth/`：OAuth provider、PKCE、device code、provider-specific login
 
-#### 关键文件补充
+### 测试与生成
 
-- `utils/event-stream.ts`：流式事件协议的底层封装，理解 `stream()` 的返回值时先看这里
-- `utils/validation.ts`：tool/schema 参数校验的基础设施
-- `utils/oauth/index.ts`：OAuth provider 总入口，CLI 登录流程通常从这里起步
-- `utils/oauth/device-code.ts`：device code 登录流程
-- `utils/oauth/pkce.ts`：PKCE 相关认证辅助
-
-### `packages/ai/scripts/`
-
-生成模型/图像模型数据和测试辅助脚本。
-
-- `generate-models.ts`
-- `generate-image-models.ts`
-- `generate-test-image.ts`
-
-### `packages/ai/test/`
-
-主要验证 provider 协议、兼容层和边界条件。
-
-- 覆盖不同 provider 的转接逻辑
-- 覆盖 streaming、tool call、oauth、cache、thinking 等行为
+- `scripts/generate-models.ts`：生成 `models.generated.ts`
+- `scripts/generate-image-models.ts`：生成 `image-models.generated.ts`
+- `test/`：provider 协议、streaming、tool call、OAuth、cache、thinking、image 等测试
 
 ---
 
-## 4. `packages/tui`
+## 4. `packages/agent`
 
-终端 UI 组件库。这个包不关心模型和 session，只关心“如何在终端上稳定地画出来并接收输入”。
+通用 agent 运行时。它不关心 Pi CLI 形态，重点是 agent loop、消息、tool call、session/harness。
 
-### `packages/tui/src/index.ts`
+### 核心入口
 
-对外总出口。
+- `src/index.ts`：对外总出口
+- `src/agent.ts`：`Agent` 类，封装 state、prompt、continue、queue、event subscription
+- `src/agent-loop.ts`：低层 loop，负责 turn、LLM streaming、tool execution、follow-up
+- `src/types.ts`：agent loop、tool hook、queue、event、state 等类型
+- `src/proxy.ts`：代理/转发 stream 的辅助
+- `src/node.ts`：Node 环境入口
 
-- 导出 `TUI`、`Terminal`
-- 导出组件、键盘、图片、自动补全、工具函数
+### `src/agent.ts`
 
-### `packages/tui/src/tui.ts`
+上层 agent 运行时对象。
 
-核心 UI 容器和渲染器。
+- 持有 `AgentState`
+- 管理 `steeringQueue` / `followUpQueue`
+- 把 `AgentLoopConfig`、stream function、hook 等组装成一次运行
+- 对外提供 `prompt()`、`continue()`、`steer()`、`followUp()`、`abort()`、`waitForIdle()`
 
-- 负责 differential rendering
-- 管理 focus、overlay、输入分发
-- 是整个 TUI 的主控类
+### `src/agent-loop.ts`
 
-### `packages/tui/src/terminal.ts`
-
-终端抽象与进程终端实现。
-
-- 统一不同终端输入输出接口
-- 作为 `TUI` 的底层依赖
-
-### `packages/tui/src/terminal-image.ts`
-
-终端图片支持。
-
-- 处理 Kitty / iTerm2 图片协议
-- 负责图片尺寸、占位和回退
-
-### `packages/tui/src/keys.ts`
-
-键盘输入解析与匹配。
-
-- 负责按键编码解析
-- 支持 Kitty key protocol
-
-### `packages/tui/src/keybindings.ts`
-
-键位绑定与冲突管理。
-
-- 统一默认快捷键
-- 支持运行时变更和查询
-
-### `packages/tui/src/autocomplete.ts`
-
-输入联想与路径/命令补全。
-
-- 给编辑器和输入框提供候选项
-
-### `packages/tui/src/components/`
-
-所有基础 UI 组件。
-
-- `text.ts`：文本渲染
-- `truncated-text.ts`：截断文本
-- `input.ts`：单行输入
-- `editor.ts`：多行编辑器
-- `markdown.ts`：markdown 渲染
-- `select-list.ts`：选择列表
-- `settings-list.ts`：设置项列表
-- `loader.ts` / `cancellable-loader.ts`：加载状态
-- `image.ts`：图片渲染
-- `box.ts`：容器和背景
-- `spacer.ts`：空白占位
-
-#### 关键文件补充
-
-- `components/editor.ts`：最重要的输入组件之一，理解 pi 的编辑体验优先看这里
-- `components/input.ts`：单行输入基础，很多交互控件会复用
-- `components/select-list.ts`：模型、session、设置等选择器的底层组件
-- `components/markdown.ts`：消息渲染和说明文本的基础
-- `components/image.ts`：终端图片显示入口
-- `components/settings-list.ts`：设置面板的核心列表逻辑
-
-### `packages/tui/src/utils.ts`
-
-底层文本和宽度处理工具。
-
-- 负责可见宽度、wrap、ANSI 处理
-- 是大多数组件的基础依赖
-
-#### 关键文件补充
-
-- `utils.ts`：宽度计算和 ANSI 处理的公共基建，很多 layout bug 会回到这里排查
-- `stdin-buffer.ts`：处理批量输入和粘贴分片，和大段输入/粘贴行为相关
-- `terminal-image.ts`：和图片协议、终端能力检测直接相关
-- `tui.ts`：虽然前面单独列过，但它仍然是整个包最核心的单点入口
-
-### `packages/tui/src/kill-ring.ts`、`undo-stack.ts`、`stdin-buffer.ts`
-
-编辑器/输入行为基础设施。
-
-- 剪切环、撤销栈、stdin 分片
-- 主要服务于 `input.ts` / `editor.ts`
-
-### `packages/tui/test/`
-
-覆盖渲染、输入、宽度、光标、选择器、图片等行为。
-
-- 这部分很适合反向理解各组件设计边界
-
----
-
-## 5. `packages/agent`
-
-通用 agent 运行时。它比 `ai` 高一层，负责“怎么跑 agent loop、怎么组织消息、怎么把 context 和 tool 调起来”。
-
-### `packages/agent/src/index.ts`
-
-对外总出口。
-
-- 导出 `Agent`
-- 导出低层 loop、harness、session 工具、proxy、types
-
-### `packages/agent/src/agent.ts`
-
-`Agent` 类本体，属于上层运行时对象。
-
-- 持有当前 `AgentState`
-- 维护 `steeringQueue` / `followUpQueue`
-- 负责把 `AgentLoopConfig` 组装成一次完整运行
-- 提供 `subscribe()`、`prompt()`、`continue()` 等对外动作
-
-#### 关键点
-
-- 这是“业务对象”，不是纯 loop
-- 状态、事件、工具执行、消息队列都在这里汇总
-- 如果要理解一次 agent 交互的生命周期，优先看这里
-
-### `packages/agent/src/agent-loop.ts`
-
-低层循环引擎，负责真正的 turn 处理。
+核心循环引擎。
 
 - `runAgentLoop()` / `runAgentLoopContinue()`：外层入口
-- `runLoop()`：主循环
-- `streamAssistantResponse()`：把 `AgentMessage[]` 转成 LLM `Message[]` 并拉流
-- `executeToolCalls()`：分发工具执行
-- `executeToolCallsSequential()` / `executeToolCallsParallel()`：两种 tool 执行模式
+- `runLoop()`：主循环，处理多 turn 和 follow-up
+- `streamAssistantResponse()`：把 `AgentMessage[]` 转成 LLM `Message[]` 并消费 provider stream
+- `executeToolCalls()`：选择 sequential / parallel 工具执行模式
+- `prepareToolCall()` / `finalizeExecutedToolCall()`：tool 参数校验和 hook 收口
 
-#### 关键点
+### `src/types.ts`
 
-- 这里定义了 agent 的 turn 语义
-- `turn_start` / `turn_end` / `agent_end` 的边界要先看这里
-- tool call 的预处理、执行、收口都在这里完成
+运行时协议和扩展点。
 
-### `packages/agent/src/types.ts`
-
-运行时协议层类型定义。
-
-- `AgentLoopConfig`：低层 loop 依赖的完整配置
+- `AgentLoopConfig`
 - `BeforeToolCallContext` / `AfterToolCallContext`
 - `BeforeToolCallResult` / `AfterToolCallResult`
-- `ToolExecutionMode` / `QueueMode`
-- `AgentLoopTurnUpdate` / `ShouldStopAfterTurnContext`
+- `ToolExecutionMode`
+- `QueueMode`
+- `ShouldStopAfterTurnContext`
+- `AgentLoopTurnUpdate`
 
-#### 关键点
+### `src/harness/`
 
-- 这是理解扩展点最直接的入口
-- 读完这个文件，基本就能知道 loop 支持哪些钩子
-- 许多高阶行为实际上是通过这些 hook 注入的
+测试/嵌入式 harness 能力。
 
-### `packages/agent/src/agent.ts`
+- `agent-harness.ts`：可控 agent harness，适合测试和嵌入式运行
+- `messages.ts`：agent/harness message 转换
+- `prompt-templates.ts`：prompt template 调用格式
+- `skills.ts`：skill 加载与格式化
+- `system-prompt.ts`：system prompt 构造
+- `types.ts`：harness 事件、资源、session、env 类型
+- `env/nodejs.ts`：Node execution env
 
-`Agent` 类本体。
+### `src/harness/session/`
 
-- 维护当前 agent state
-- 管理消息队列、follow-up、steering
-- 调用低层 loop 并处理生命周期事件
+session 持久化抽象。
 
-### `packages/agent/src/agent-loop.ts`
-
-最底层的 agent 循环。
-
-- 负责 prompt -> LLM -> tool call -> follow-up 的循环
-- 处理 `turn_start` / `turn_end` / `agent_end`
-- 是理解 agent 行为的关键入口
-
-### `packages/agent/src/types.ts`
-
-agent 运行时类型系统。
-
-- tool call、before/after hook、queue mode、loop config 等
-- 这里能快速看出 loop 支持哪些扩展点
-
-### `packages/agent/src/harness/`
-
-测试/仿真层。
-
-- `agent-harness.ts`：可控环境下的 agent harness
-- `session/`：session 存储和回放
-- `compaction/`：压缩与摘要
-- `messages.ts`：消息转换
-- `prompt-templates.ts`：提示模板
-- `skills.ts`：技能发现和加载
-- `system-prompt.ts`：系统提示构造
-
-#### 关键文件补充
-
-- `harness/agent-harness.ts`：测试和仿真最重要的入口，适合理解 agent 行为的可控版本
-- `harness/compaction/compaction.ts`：上下文压缩主逻辑
-- `harness/compaction/branch-summarization.ts`：分支摘要生成逻辑
-- `harness/session/session.ts`：session 树和消息回放的核心抽象
-
-### `packages/agent/src/harness/session/session.ts`
-
-session 抽象和树状上下文构建。
-
-- `buildSessionContext()`：把树状 session entries 转成 LLM 可用上下文
-- `Session`：持久化 session 的高层封装
-- `appendMessage()` / `appendCompaction()` / `appendCustomEntry()`：把不同 entry 写回存储
-- `moveTo()`：切换叶子节点/分支
-
-#### 关键点
-
-- 这是 session 树和消息流之间的转换层
-- 对理解“分支”“压缩”“回放”尤其重要
-
-### `packages/agent/src/harness/agent-harness.ts`
-
-可控测试环境下的 agent runtime。
-
-- 用于把 `agent-loop` 放进可测的仿真环境
-- 管理 session、资源、工具和事件订阅
-- 适合看 agent 行为在测试里是怎么被驱动的
-
-### `packages/agent/src/harness/compaction/compaction.ts`
-
-上下文压缩主逻辑。
-
-- 计算 token
-- 判断是否需要压缩
-- 生成压缩摘要
-- 决定切点和保留范围
-
-### `packages/agent/src/harness/compaction/branch-summarization.ts`
-
-分支摘要生成。
-
-- 把 branch 结构整理成摘要输入
-- 主要服务于 session 分支导航和上下文压缩
-
-### `packages/agent/src/proxy.ts`
-
-代理/转发相关能力。
-
-- 用于把流式调用或运行环境转成另一种 transport
-
-### `packages/agent/src/node.ts`
-
-Node 环境入口。
-
-- 适合 Node 专用场景的适配层
-
-### `packages/agent/src/harness/session/`
-
-session 持久化与结构化树管理。
-
-- `session.ts`：session 抽象
-- `jsonl-storage.ts` / `jsonl-repo.ts`：JSONL 持久化
+- `session.ts`：session 树和 `buildSessionContext()`
+- `jsonl-storage.ts` / `jsonl-repo.ts`：JSONL 持久化实现
 - `memory-storage.ts` / `memory-repo.ts`：内存实现
-- `repo-utils.ts`：仓储辅助
-- `uuid.ts`：id 生成
+- `repo-utils.ts`：repo 辅助
+- `uuid.ts`：UUID v7
 
-### `packages/agent/test/`
+### `src/harness/compaction/`
 
-主要验证 loop、harness、session、compaction 和集成行为。
+上下文压缩与分支摘要。
 
-- 这部分适合用来理解设计意图和边界条件
+- `compaction.ts`：token 估算、cut point、summary 生成、compact
+- `branch-summarization.ts`：branch summary 准备和生成
+- `utils.ts`：压缩相关工具
+
+### 文档与测试
+
+- `docs/agent-harness.md`：harness 使用说明
+- `docs/durable-harness.md`：持久化 harness
+- `docs/hooks.md`：hook 说明
+- `docs/observability.md`：可观测性说明
+- `test/`：agent loop、Agent class、harness、session、compaction 测试
 
 ---
 
-## 6. `packages/coding-agent`
+## 5. `packages/multi-agent`
 
-仓库里的最终用户产品层，也是最复杂的一层。它把 `ai`、`agent` 和 `tui` 组合成一个完整 CLI。
+多智能体原语包。它只定义 sub-agent、role session、shared state 等通用能力，不直接绑定 coding-agent UI。
 
-### `packages/coding-agent/src/index.ts`
+### 核心入口
 
-对外 SDK/库入口。
+- `src/index.ts`：对外总出口
+- `src/types.ts`：sub-agent 定义、session-like、result、inspection 等类型
+- `src/session-like.ts`：抽象 `AgentSessionLike`
+- `src/sub-agent.ts`：`PiSubAgentInstance`
+- `src/registry.ts`：`SubAgentRegistry`
+- `src/run-subagent.ts`：`RunSubAgentRunner` 和 `SubAgentInstancePool`
+- `src/run-subagent-types.ts`：run_subagent 协议、capabilities、event observer 类型
+- `src/role-session-index.ts`：role session 绑定索引
 
-- 导出 session、runtime、tools、extensions、settings、model registry 等核心能力
-- 既可作为 CLI 核心，也可作为嵌入式 SDK
+### `src/sub-agent.ts`
 
-#### 关键点
+单个 sub-agent 实例封装。
 
-- 这是上层“SDK 入口”
-- 如果要给外部程序嵌入 pi，通常先看这里
+- 持有 sub-agent definition 和 `AgentSessionLike`
+- 提供 `prompt()`、`steer()`、`followUp()`、`abort()`、`invoke()`、`inspect()`、`close()`
+- 管理 `idle` / `running` / `closed` phase
+- 从 session message 中提取最终 assistant 文本和 status
 
-### `packages/coding-agent/src/cli.ts`
+### `src/run-subagent.ts`
 
-真正的命令行入口。
+多智能体运行器。
 
-- 初始化进程环境
-- 配置 HTTP dispatcher
-- 调用 `main()`
+- `SubAgentInstancePool`：按 agent id 和 reuse key 缓存/替换实例
+- `RunSubAgentRunner`：按 `agentId` 找 definition、创建 session、控制并发、执行 invocation
+- 支持 `ephemeral` / `session` state policy
+- 支持 role session lifecycle store
+- 支持 progress/event observer
 
-#### 关键点
+### `src/registry.ts`
 
-- 这里很薄，几乎不做业务
-- 主要是 Node 进程启动和环境准备
+sub-agent definition 注册表。
 
-### `packages/coding-agent/src/main.ts`
+- `register()`
+- `get()`
+- `list()`
 
-CLI 主控制流。
+### `src/role-session-index.ts`
 
-- 解析参数
-- 选择 mode（interactive / print / json / rpc）
-- 组装 session / settings / model / extension / UI
-- 是理解整个产品运行链路的第一入口
+主 session 与 sub-agent role session 的绑定索引。
 
-#### 关键点
+- `FileRoleSessionIndex`
+- `createDefinitionIdentity()`
+- `defaultRoleSessionIndexPath()`
 
-- 这是 CLI 的总编排器
-- 参数解析、session 选择、mode 分发、服务装配都从这里开始
-- 如果想看“启动时到底先做什么”，先看这里
+### `src/shared-state/`
 
-### `packages/coding-agent/src/config.ts`
+共享状态 manifest 原语。
 
-路径和版本相关配置。
+- `types.ts`：`SharedStateGrant`、`SharedStateArtifact`、`SharedStateManifest` 等类型
+- `memory-manifest.ts`：内存 manifest
+- `file-manifest.ts`：文件 manifest
+- `index.ts`：shared-state 对外导出
 
-- 管理 agent dir、session dir、包目录、版本信息
-- 是大量模块共享的基础配置源
+---
 
-#### 关键点
+## 6. `packages/tui`
 
-- 路径约定、版本和安装位置都在这里统一
-- 许多“全局目录”问题会回到这里
+终端 UI 组件库。它负责输入、渲染、layout、overlay、终端图片、按键处理。
 
-### `packages/coding-agent/src/core/`
+### 核心入口
 
-最重要的核心业务层。
+- `src/index.ts`：对外总出口
+- `src/tui.ts`：`TUI`、`Container`、overlay、focus、differential rendering
+- `src/terminal.ts`：`Terminal` 抽象和 `ProcessTerminal`
+- `src/keys.ts`：键盘解析、Kitty key protocol、`matchesKey`
+- `src/keybindings.ts`：keybindings 管理
+- `src/autocomplete.ts`：autocomplete provider 和组合逻辑
+- `src/utils.ts`：宽度、ANSI、wrap、truncate 工具
+- `src/terminal-image.ts`：Kitty / iTerm2 图片协议
+- `src/stdin-buffer.ts`：stdin 分片和粘贴处理
+- `src/kill-ring.ts` / `src/undo-stack.ts`：编辑器行为辅助
 
-- `agent-session.ts`：核心 session 生命周期与消息流
-- `agent-session-runtime.ts`：runtime 抽象
-- `agent-session-services.ts`：服务构建与依赖装配
-- `sdk.ts`：程序化使用入口
-- `model-registry.ts`：模型与 provider 配置加载
-- `settings-manager.ts`：全局/项目设置
-- `session-manager.ts`：session 结构化树和持久化
-- `resource-loader.ts`：skills/prompts/themes/context files 加载
-- `extensions/`：扩展系统
-- `tools/`：内建工具定义和文件操作
-- `export-html/`：会话导出 HTML
-- `auth-storage.ts` / `auth-guidance.ts`：认证和提示
-- `compaction/`：上下文压缩
-- `messages.ts`：session/agent 消息转换
-- `slash-commands.ts`：命令系统
-- `prompt-templates.ts` / `skills.ts` / `system-prompt.ts`
+### `src/components/`
 
-#### 关键文件补充
+基础组件。
 
-- `core/agent-session.ts`：整个 CLI 的业务心脏，负责把 session、tool、event、compaction 串起来
-- `core/agent-session-runtime.ts`：把 runtime 服务组合成可执行上下文
-- `core/agent-session-services.ts`：组装 auth/model/session/settings/resource 等服务
-- `core/model-registry.ts`：模型发现、配置、OAuth 与 provider registration 的中心
-- `core/session-manager.ts`：session 文件结构、树、分支、回放和持久化
-- `core/settings-manager.ts`：全局/项目设置读取、合并、写回和锁控制
-- `core/resource-loader.ts`：加载 skills、prompts、themes、context files
-- `core/sdk.ts`：给外部程序调用的主 SDK 接口
-- `core/slash-commands.ts`：`/login`、`/model`、`/settings` 等命令定义
-- `core/tools/index.ts`：内建工具工厂和总装配
-- `core/extensions/loader.ts`：扩展加载入口
-- `core/extensions/runner.ts`：扩展运行时与事件派发入口
-- `core/export-html/index.ts`：会话导出 HTML 的主入口
+- `editor.ts`：多行编辑器
+- `input.ts`：单行输入
+- `select-list.ts`：选择器列表
+- `settings-list.ts`：设置列表
+- `markdown.ts`：Markdown 渲染
+- `text.ts`：文本组件
+- `truncated-text.ts`：截断文本
+- `loader.ts` / `cancellable-loader.ts`：加载状态
+- `image.ts`：终端图片组件
+- `box.ts`：容器背景/边距
+- `spacer.ts`：空白占位
 
-### `packages/coding-agent/src/core/agent-session.ts`
+### Native / 测试
 
-最核心的业务文件之一。
+- `native/`：darwin modifier、win32 console mode 原生模块和预编译产物
+- `test/`：输入、渲染、宽度、overlay、image、editor、markdown、keybinding 等测试
 
-- 管理单个 session 的生命周期
-- 把 `Agent`、`SessionManager`、`SettingsManager`、`ResourceLoader` 串起来
-- 负责 prompt、事件、tool 执行、compaction、branch、fork、tree、resume 等行为
+---
 
-#### 关键点
+## 7. `packages/coding-agent`
 
-- 这是 CLI 真正“会做事”的地方
-- 交互模式、print 模式、RPC 模式最终都依赖它
-- 若要理解一次消息如何进 session、如何触发工具、如何落盘，先看这里
+面向用户的 Pi CLI 和 SDK。它把 `ai`、`agent`、`multi-agent`、`tui` 组合成完整 coding agent。
 
-### `packages/coding-agent/src/core/agent-session-runtime.ts`
+### 顶层入口
 
-运行时重绑定层。
+- `src/cli.ts`：bin 入口，设置进程标题、dispatcher，然后调用 `main()`
+- `src/main.ts`：CLI 总编排，解析参数、选择 mode、创建 session/runtime、挂载 multi-agent tool
+- `src/index.ts`：SDK/库对外出口
+- `src/config.ts`：路径、版本、agent dir、docs/share URL 等配置
+- `src/migrations.ts`：配置和认证迁移
+- `src/package-manager-cli.ts`：package/config 相关 CLI 子命令
 
-- 在 cwd / session 切换时重建服务
-- 负责 runtime teardown / re-create / rebind
-- 处理 `new`、`resume`、`fork` 一类切换场景
+### `src/cli/`
 
-#### 关键点
+CLI 参数和启动输入处理。
 
-- 这里解决的是“当前会话上下文变了，怎么安全替换 runtime”
-- 和 UI 解绑/重绑的时机关系很大
+- `args.ts`：命令行参数解析
+- `initial-message.ts`：初始消息构造
+- `file-processor.ts`：`@file` / 文件参数处理
+- `list-models.ts`：模型列表输出
+- `session-picker.ts`：resume session 选择
+- `config-selector.ts`：配置选择
 
-### `packages/coding-agent/src/core/agent-session-services.ts`
+### `src/core/agent-session.ts`
 
-服务组装层。
+coding-agent 的核心业务对象。
 
-- 创建 `AuthStorage`、`SettingsManager`、`ModelRegistry`、`ResourceLoader`
-- 处理 extension flags 和 provider registrations
-- 输出一组 cwd-bound services，供 session 创建使用
+- 连接 `Agent`、`SessionManager`、`SettingsManager`、`ResourceLoader`、`ModelRegistry`
+- 管理 prompt、steer、follow-up、abort、compaction、tree、fork、session info
+- 订阅 agent events 并写入 session
+- 维护 active tools、custom tools、extension runner
+- 构造 system prompt 和 LLM context
 
-#### 关键点
+### `src/core/agent-session-runtime.ts`
 
-- 这是把外部依赖装进 runtime 的入口
-- 如果要看“为什么某些资源在切 cwd 后重新加载”，从这里开始
+session/runtime 替换层。
 
-### `packages/coding-agent/src/core/model-registry.ts`
+- `AgentSessionRuntime` 持有当前 session 和 cwd-bound services
+- 负责 `switchSession()`、`newSession()`、`fork()` 等场景
+- session 替换时执行 extension shutdown、UI rebind、service recreation
+
+### `src/core/agent-session-services.ts`
+
+cwd-bound 服务构造。
+
+- 创建 `AuthStorage`
+- 创建 `SettingsManager`
+- 创建 `ModelRegistry`
+- 创建 `DefaultResourceLoader`
+- 应用 extension flags
+- 注册 extension pending provider
+
+### `src/core/sdk.ts`
+
+程序化使用入口。
+
+- `createAgentSession()`
+- `createAgentSessionServices()`
+- tool factory re-export
+- extension / prompt / skill 相关类型导出
+
+### `src/core/session-manager.ts`
+
+coding-agent session 文件管理。
+
+- JSONL session header / entry 类型
+- v1 -> v2 -> v3 migration
+- session tree、branch、leaf、label
+- `buildSessionContext()`
+- fork、clone、continue、list、listAll
+
+### `src/core/model-registry.ts`
 
 模型和 provider 配置中心。
 
-- 读取 built-in 和 custom models
-- 处理 `models.json`
-- 处理 provider overrides、compat、headers、auth
-- 注册 API provider 和 OAuth provider
+- 合并 built-in models、custom models、provider overrides
+- 读取 `models.json`
+- 处理 API key / OAuth credentials
+- 注册 custom provider
+- 解析 provider headers、compat、thinking level map
 
-#### 关键点
+### `src/core/settings-manager.ts`
 
-- 这是模型发现和 provider 兼容层的核心
-- `auth.json` / `models.json` 相关行为大多经由这里
+设置系统。
 
-### `packages/coding-agent/src/core/settings-manager.ts`
+- 全局设置：`~/.pi/agent/settings.json`
+- 项目设置：`.pi/settings.json`
+- deep merge global/project
+- 管理 theme、transport、retry、compaction、packages、skills、prompts、images、terminal、sessionDir 等
+- 使用 lockfile 保护写入
 
-全局和项目设置管理。
+### `src/core/resource-loader.ts`
 
-- 读取、合并、锁定、写回 settings
-- 区分 global / project scope
-- 处理 compaction、retry、theme、terminal、images、sessionDir 等设置
+资源加载中心。
 
-#### 关键点
+- 加载 `AGENTS.md` / `CLAUDE.md`
+- 加载 extensions、skills、prompts、themes
+- 加载 sub-agent definitions
+- 处理 package sources
+- 提供 `getExtensions()`、`getSkills()`、`getPrompts()`、`getThemes()`、`getSubAgents()`
 
-- 这是配置系统的事实来源
-- 当行为看起来“被配置影响了”，先查这里
+### `src/core/multi-agent/`
 
-### `packages/coding-agent/src/core/resource-loader.ts`
+coding-agent 与 `packages/multi-agent` 的适配层。
 
-资源发现和加载。
+- `agent-session-adapter.ts`：把 `AgentSession` 适配成 `AgentSessionLike`
+- `session-factory.ts`：为 sub-agent 创建隔离的 coding-agent session
+- `restricted-resource-loader.ts`：sub-agent 受限资源加载器，默认不加载外部 tools/skills/extensions
+- `run-subagent-tool.ts`：正式 `run_subagent` tool，支持 registered sub-agents、shared state、role session
+- `direct-subagent-tool.ts`：简化 direct `run_subagent` tool，主要用于早期/测试场景
+- `shared-state-tools.ts`：`shared_state.list/read/grep/write/edit` 工具实现
+- `sub-agent-definition-loader.ts`：从 frontmatter 文件解析 sub-agent definition
+- `role-session-store.ts`：coding-agent session 与 sub-agent role session lifecycle store
+- `definition-source.ts`：文件定义和 demo definitions 的选择逻辑
+- `index.ts`：multi-agent 适配层总出口
 
-- 加载 skills、prompt templates、themes、agents files、system prompt
-- 合并 global / project / package / extension 资源
-- 向 session/runtime 提供统一资源视图
+相关启动点：
 
-#### 关键点
+- `src/main.ts` 会读取 `PI_MULTI_AGENT_RUN_SUBAGENT`
+- 开启后从 `resourceLoader.getSubAgents()` 获取定义
+- 无文件定义时回退到 demo definitions
+- 注入 `createRunSubAgentTool()` 到 `sessionOptions.customTools`
+- `PI_MULTI_AGENT_SHARED_STATE_ROOT` 可指定 shared state root
 
-- 这是“可扩展内容”入口
-- AGENTS.md、skills、prompts、themes 都会经过这里
+### `src/core/tools/`
 
-### `packages/coding-agent/src/core/slash-commands.ts`
+内建工具。
 
-内建 slash command 索引。
-
-- 定义 `/settings`、`/model`、`/session`、`/tree`、`/login` 等命令
-- 和扩展/skills 提供的命令一起构成命令系统
-
-#### 关键点
-
-- 这是命令体系的目录页
-- 先看这里能快速知道 CLI 支持哪些标准动作
-
-### `packages/coding-agent/src/modes/`
-
-不同运行模式。
-
-- `interactive/interactive-mode.ts`：主交互 UI
-- `print-mode.ts`：文本/JSON 打印模式
-- `rpc/`：进程集成模式
-
-### `packages/coding-agent/src/modes/print-mode.ts`
-
-非交互输出模式。
-
-- 把 session/消息流转成纯文本或 JSON 输出
-- 适合脚本化调用
-
-### `packages/coding-agent/src/modes/rpc/`
-
-RPC 进程协作模式。
-
-- `rpc-mode.ts`：RPC 主流程
-- `rpc-client.ts`：RPC 客户端
-- `jsonl.ts`：JSONL 协议
-- `rpc-types.ts`：RPC 协议类型
-
-### `packages/coding-agent/src/modes/interactive/components/`
-
-交互 UI 的组件集合。
-
-- model / session / settings / theme / extension / thinking / footer / message render 相关组件
-- 这里基本覆盖了 CLI 界面的大部分视觉和交互逻辑
-
-#### 关键文件补充
-
-- `modes/interactive/interactive-mode.ts`：交互模式主流程，理解 UI 如何和 session 联动优先看这里
-- `modes/interactive/components/assistant-message.ts`：assistant 消息渲染
-- `modes/interactive/components/user-message.ts`：用户消息渲染
-- `modes/interactive/components/tool-execution.ts`：tool 执行展示
-- `modes/interactive/components/footer.ts`：底部状态栏
-- `modes/interactive/components/model-selector.ts`：模型选择器
-- `modes/interactive/components/session-selector.ts`：session 选择器
-- `modes/interactive/components/settings-selector.ts`：设置面板入口
-- `modes/interactive/components/extension-selector.ts`：扩展管理入口
-
-### `packages/coding-agent/src/modes/interactive/interactive-mode.ts`
-
-交互 UI 总编排。
-
-- 负责 TUI 的整体布局、输入、状态栏、消息区、编辑器
-- 把 `AgentSessionRuntime` 的状态映射到界面
-- 连接 slash commands、selector、overlay、footer、autocomplete 等组件
-
-#### 关键点
-
-- 这是用户真正看到的主界面控制器
-- 如果是 UI 行为问题，优先看这里和其组件
-
-### `packages/coding-agent/src/core/tools/`
-
-内建工具实现。
-
-- `read.ts` / `write.ts` / `edit.ts` / `bash.ts`
-- `find.ts` / `grep.ts` / `ls.ts`
-- `file-mutation-queue.ts`：文件变更串行化
-- `tool-definition-wrapper.ts`：把工具定义包装成 session/runtime 可用形式
-
-#### 关键文件补充
-
-- `core/tools/bash.ts`：shell 执行工具，权限和输出处理通常从这里看
-- `core/tools/edit.ts`：文本编辑工具
-- `core/tools/edit-diff.ts`：diff 驱动的编辑辅助
-- `core/tools/read.ts`：文件读取工具
-- `core/tools/write.ts`：文件写入工具
-- `core/tools/find.ts` / `grep.ts` / `ls.ts`：检索类工具
-- `core/tools/file-mutation-queue.ts`：避免并发文件修改冲突
-
-### `packages/coding-agent/src/core/tools/bash.ts`
-
-Shell 工具实现。
-
-- 执行命令
-- 处理 spawn、环境、输出和错误
-- 常和权限、平台差异一起出现问题
-
-### `packages/coding-agent/src/core/tools/edit.ts`
-
-编辑工具实现。
-
-- 面向 LLM 的文本编辑入口
-- 和 diff、write、file mutation queue 密切相关
-
-### `packages/coding-agent/src/core/tools/read.ts`
-
-文件读取工具。
-
-- 处理文件读取、裁剪和返回结果格式
-
-### `packages/coding-agent/src/core/tools/write.ts`
-
-文件写入工具。
-
-- 负责写文件和返回确认结果
-
-### `packages/coding-agent/src/core/tools/find.ts`、`grep.ts`、`ls.ts`
-
-检索工具组。
-
-- `find.ts`：路径/文件查找
+- `index.ts`：工具工厂总入口，创建 read/bash/edit/write/grep/find/ls
+- `read.ts`：文件读取
+- `write.ts`：文件写入
+- `edit.ts`：文本编辑工具
+- `edit-diff.ts`：diff 辅助
+- `bash.ts`：shell 执行工具
 - `grep.ts`：内容搜索
-- `ls.ts`：目录枚举
+- `find.ts`：路径搜索
+- `ls.ts`：目录列表
+- `file-mutation-queue.ts`：文件修改串行化
+- `tool-definition-wrapper.ts`：把 tool definition 包装成 agent tool
+- `render-utils.ts`：tool 输出渲染辅助
+- `truncate.ts`：输出裁剪
 
-### `packages/coding-agent/src/core/tools/tool-definition-wrapper.ts`
+### `src/core/extensions/`
 
-工具定义包装层。
+扩展系统。
 
-- 把 `AgentTool` 和 session/runtime 工具定义对接起来
-- 统一工具元信息和运行时行为
+- `types.ts`：扩展 API、事件、tool、command、UI context 类型
+- `loader.ts`：使用 jiti 加载扩展，处理 aliases / virtual modules
+- `runner.ts`：扩展事件分发、生命周期、UI/session/model 绑定
+- `wrapper.ts`：extension tool wrapper
+- `index.ts`：扩展系统对外出口
 
-### `packages/coding-agent/src/core/extensions/`
+### `src/core/compaction/`
 
-扩展系统核心。
+coding-agent 侧 compaction。
 
-- `loader.ts`：发现和加载扩展
-- `runner.ts`：扩展执行和生命周期
-- `wrapper.ts`：工具/命令封装
-- `types.ts`：扩展 API 和事件类型
+- `compaction.ts`：上下文压缩
+- `branch-summarization.ts`：分支摘要
+- `utils.ts`：压缩辅助
+- `index.ts`：对外出口
 
-#### 关键文件补充
+### `src/core/export-html/`
 
-- `core/extensions/loader.ts`：扩展发现、读取和注册
-- `core/extensions/runner.ts`：扩展事件分发、生命周期和错误处理
-- `core/extensions/wrapper.ts`：把 tool / command 包成运行时可消费的形式
-- `core/extensions/types.ts`：理解扩展系统契约的最重要入口
+session 导出 HTML。
 
-### `packages/coding-agent/src/core/extensions/loader.ts`
-
-扩展加载总入口。
-
-- 负责发现、加载、虚拟模块注入和 alias 处理
-- Bun binary / Node 开发模式都依赖它
-
-### `packages/coding-agent/src/core/extensions/runner.ts`
-
-扩展运行时和事件调度核心。
-
-- 负责扩展生命周期
-- 负责事件 emit / handler 调用 / shortcut 冲突控制
-- 连接 UI、session、model registry、command 系统
-
-### `packages/coding-agent/src/core/extensions/types.ts`
-
-扩展系统契约定义。
-
-- 定义 extension、runtime、command、tool、event、UI API 的类型
-- 读这个文件基本能知道扩展系统有哪些能力
-
-### `packages/coding-agent/src/core/export-html/`
-
-session 导出 HTML 的实现。
-
-- `index.ts`：导出入口
-- `template.html` / `template.css` / `template.js`：静态模板
+- `index.ts`：导出主流程
+- `template.html` / `template.css` / `template.js`：导出页模板
 - `ansi-to-html.ts`：ANSI 转 HTML
-- `tool-renderer.ts`：工具输出渲染
+- `tool-renderer.ts`：工具结果渲染
+- `vendor/`：导出页依赖的静态 vendor
 
-#### 关键文件补充
+### 其他 `src/core/` 文件
 
-- `core/export-html/index.ts`：HTML 导出主流程，负责把 session 渲染成可分享页面
-- `core/export-html/template.html`：导出页骨架
-- `core/export-html/template.css`：导出页样式
-- `core/export-html/template.js`：导出页交互脚本
-- `core/export-html/ansi-to-html.ts`：将终端 ANSI 输出转为 HTML
+- `auth-storage.ts`：API key / OAuth credential 存储
+- `auth-guidance.ts`：认证错误提示文案
+- `bash-executor.ts`：用户 bash / tool bash 执行支持
+- `event-bus.ts`：内部事件总线
+- `footer-data-provider.ts`：footer 数据
+- `http-dispatcher.ts`：undici dispatcher / timeout 配置
+- `keybindings.ts`：应用级 keybindings
+- `messages.ts`：custom / bash / compaction / branch summary message 构造
+- `model-resolver.ts`：CLI model pattern / scoped model 解析
+- `output-guard.ts`：print/json 模式 stdout guard
+- `package-manager.ts`：Pi package 资源加载
+- `prompt-templates.ts`：prompt templates
+- `provider-display-names.ts`：provider 显示名
+- `resolve-config-value.ts`：配置值和 headers 解析
+- `session-cwd.ts`：session cwd 丢失处理
+- `skills.ts`：skill 加载
+- `slash-commands.ts`：内建 slash commands
+- `source-info.ts`：资源来源信息
+- `system-prompt.ts`：system prompt 构造
+- `telemetry.ts`：安装/版本 telemetry
+- `timings.ts`：启动耗时记录
+- `diagnostics.ts`：resource diagnostics 类型
 
-### `packages/coding-agent/src/core/messages.ts`
+### `src/modes/`
 
-session 消息和自定义消息构造。
+运行模式。
 
-- 负责把各种内部状态转成可写入 session 的消息
-- 和导出、回放、扩展消息渲染都有关
+- `interactive/interactive-mode.ts`：TUI 交互模式总控制器
+- `print-mode.ts`：文本/JSON 非交互模式
+- `rpc/rpc-mode.ts`：RPC server mode
+- `rpc/rpc-client.ts`：RPC client
+- `rpc/jsonl.ts`：JSONL RPC 协议辅助
+- `rpc/rpc-types.ts`：RPC 类型
+- `index.ts`：mode 总出口
 
-### `packages/coding-agent/src/core/session-manager.ts`
+### `src/modes/interactive/components/`
 
-session 树和持久化的中心。
+交互模式 UI 组件。
 
-- 管理 JSONL session 文件
-- 支持 fork / tree / branch / label / compaction / migrate
-- 构建 session context
+- `assistant-message.ts` / `user-message.ts`：消息渲染
+- `tool-execution.ts` / `bash-execution.ts`：工具和 bash 展示
+- `footer.ts`：底部状态栏
+- `custom-editor.ts` / `extension-editor.ts`：编辑器
+- `model-selector.ts` / `scoped-models-selector.ts`：模型选择
+- `session-selector.ts` / `tree-selector.ts` / `user-message-selector.ts`：session/tree/fork 选择
+- `settings-selector.ts` / `theme-selector.ts` / `thinking-selector.ts`：设置面板
+- `extension-selector.ts` / `extension-input.ts`：extension UI
+- `login-dialog.ts` / `oauth-selector.ts`：登录与 OAuth UI
+- `custom-message.ts` / `skill-invocation-message.ts` / `branch-summary-message.ts` / `compaction-summary-message.ts`：特殊消息
 
-#### 关键点
+### `src/utils/`
 
-- 如果要理解“会话历史如何保存和回放”，这里是主文件
-- 很多 UI 和 command 行为都最终落到这里
+CLI 通用工具。
 
-### `packages/coding-agent/src/utils/`
+- `paths.ts`：路径解析和规范化
+- `shell.ts` / `child-process.ts`：进程和 shell
+- `git.ts`：Git URL/状态辅助
+- `clipboard.ts` / `clipboard-native.ts` / `clipboard-image.ts`：剪贴板
+- `image-resize.ts` / `image-convert.ts` / `photon.ts`：图片处理
+- `frontmatter.ts`：frontmatter 解析
+- `syntax-highlight.ts`：代码高亮
+- `version-check.ts`：版本检查
+- `windows-self-update.ts`：Windows self-update quarantine 清理
+- `tools-manager.ts`：外部工具查找
 
-通用底层工具。
+### `src/bun/`
 
-- 文件系统、路径、shell、git、clipboard、image、highlight、frontmatter、version check 等
-- 很多 CLI 能力都在这里落地
+Bun binary 相关入口。
 
-#### 关键文件补充
+- `cli.ts`：Bun binary CLI
+- `register-bedrock.ts`：Bedrock 注册
+- `restore-sandbox-env.ts`：sandbox env 恢复
 
-- `utils/paths.ts`：路径规范化和解析，很多跨平台问题都绕不开
-- `utils/git.ts`：git 相关辅助
-- `utils/shell.ts`：shell 命令封装
-- `utils/clipboard.ts` / `clipboard-native.ts` / `clipboard-image.ts`：剪贴板能力
-- `utils/image-resize.ts` / `image-convert.ts`：图片预处理
-- `utils/frontmatter.ts`：prompt/skill/frontmatter 解析
-- `utils/version-check.ts`：版本检查与更新相关逻辑
-- `utils/tools-manager.ts`：工具管理辅助
+### 文档、示例、测试
 
-### `packages/coding-agent/examples/`
-
-扩展示例和 SDK 示例。
-
-- `examples/sdk/`：SDK 用法示例
-- `examples/extensions/`：扩展示例集合
-- 适合用来理解扩展系统预期形态
-
-### `packages/coding-agent/docs/`
-
-用户文档与能力说明。
-
-- `quickstart`、`usage`、`extensions`、`skills`、`settings`、`rpc`、`themes`、`models` 等
-- 是理解产品面向用户暴露能力的好入口
-
-### `packages/coding-agent/test/`
-
-覆盖 CLI、session、runtime、extension、tools、export HTML、RPC、interactive mode 的大量回归测试。
-
-- 如果后续要定位行为变化，这里通常能最快找到相关场景
+- `docs/`：用户文档，覆盖 settings、models、extensions、skills、sessions、rpc、sdk 等
+- `examples/sdk/`：SDK 示例
+- `examples/extensions/`：extension 示例
+- `test/`：CLI、core、tools、extensions、session、RPC、multi-agent、UI 组件等测试
 
 ---
 
-## 7. 推荐的阅读顺序
+## 8. `packages/web-backend`
 
-如果后面要继续深入理解代码，建议按这个顺序看：
+Web UI 的 Node 后端桥接层。它提供 HTTP API + SSE，把 Web UI 和 live/replay Pi session 连接起来。
 
-1. `packages/coding-agent/src/main.ts`
-2. `packages/coding-agent/src/core/agent-session.ts`
-3. `packages/agent/src/agent.ts`
-4. `packages/agent/src/agent-loop.ts`
-5. `packages/ai/src/stream.ts`
-6. `packages/ai/src/api-registry.ts`
-7. 再回头看 `packages/coding-agent/src/core/extensions/` 和 `packages/coding-agent/src/core/tools/`
+### 核心入口
 
-这样能先把“产品入口 -> 会话运行时 -> agent loop -> provider 层”的链路串起来，再看扩展和工具细节会更容易。
+- `src/index.ts`：对外导出 contract、errors、server、session store
+- `src/cli.ts`：`pi-web-backend` bin，读取 env 后启动 Hono server
+- `src/server.ts`：HTTP API 和 SSE endpoint
+- `src/contract.ts`：前后端共享 API contract 类型
+- `src/session-store.ts`：后端当前 session snapshot 状态
+- `src/errors.ts`：API error 类型和响应
+- `src/env-loader.ts`：`.env` 加载
+
+### `src/server.ts`
+
+Hono app 主入口。
+
+- `GET /api/state`
+- `GET /api/messages`
+- `GET /api/agents`
+- `GET /api/agents/:agentId/history`
+- `GET /api/role-sessions`
+- `GET /api/shared-state/manifest`
+- `GET /api/shared-state/artifact`
+- `GET /api/events`
+- `POST /api/session/start`
+- `POST /api/session/stop`
+- `POST /api/prompt`
+- `POST /api/abort`
+- `POST /api/replay/reset`
+- `POST /api/replay/speed`
+
+### `src/engines/`
+
+后端运行模式抽象。
+
+- `engine.ts`：`BackendEngine` interface
+- `empty-engine.ts`：未启动状态
+- `live-rpc-engine.ts`：通过 `RpcClient` 启动/控制真实 coding-agent RPC session
+- `replay-engine.ts`：读取 JSONL replay log 并按速度回放
+
+### `src/events/`
+
+事件归一化和 SSE。
+
+- `sse-bus.ts`：SSE client 管理和 event envelope 格式化
+- `normalize-event.ts`：agent events -> Web timeline events
+- `run-subagent-progress.ts`：run_subagent progress 汇总成 agent card 状态
+- `agent-history.ts`：sub-agent history 构造
+
+### `src/shared-state/`
+
+Web backend 读取 shared state。
+
+- `locator.ts`：定位 shared state root
+- `manifest-reader.ts`：读取 manifest
+- `artifact-reader.ts`：读取 artifact 内容
+- `path-safety.ts`：路径安全校验
+
+### `src/replay/`
+
+Replay 支持。
+
+- `jsonl-log-reader.ts`：读取 JSONL event log
+- `replay-state-reducer.ts`：根据事件还原 replay state
+
+### `src/role-sessions/`
+
+role session 读取。
+
+- `role-session-reader.ts`：读取 `.pi/multi-agent/role-sessions.json`
+
+### 测试
+
+- `test/server-mock-api.test.ts`
+- `test/live-rpc-engine.test.ts`
+- `test/replay-regression.test.ts`
+- `test/session-store.test.ts`
+- `test/path-safety.test.ts`
+- `test/jsonl-log-reader.test.ts`
+- `test/env-loader.test.ts`
+
+---
+
+## 9. `packages/web-ui`
+
+React + Vite Web UI。用于观察和控制 web-backend 暴露的 live/replay session。
+
+### 核心入口
+
+- `src/main.tsx`：React root
+- `src/App.tsx`：应用总编排，hydrate、SSE 连接、prompt/abort/start/stop/replay 控制
+- `src/styles.css`：全局样式
+- `index.html`：Vite HTML 入口
+- `vite.config.ts` / `vitest.config.ts`：构建和测试配置
+
+### `src/api/`
+
+前后端通信。
+
+- `contracts.ts`：复制/对齐后端 contract 类型
+- `http-client.ts`：REST API client
+- `event-client.ts`：SSE client，监听 `session.started`、`message.delta`、`agent.updated`、`shared_state.changed` 等
+
+### `src/state/`
+
+前端状态管理。
+
+- `app-state.ts`：`WebUiState` 和初始状态
+- `app-reducer.ts`：hydrate、SSE、agent history、artifact load、input 状态 reducer
+- `selectors.ts`：派生数据选择器
+
+### `src/components/layout/`
+
+页面骨架。
+
+- `AppShell.tsx`：整页布局，组合 session controls、timeline、agent cards、shared state panel
+
+### `src/components/session/`
+
+session 控制。
+
+- `SessionControls.tsx`：start live、start replay、stop、reset、speed、abort 等 UI
+
+### `src/components/prompt/`
+
+用户输入。
+
+- `PromptInput.tsx`：prompt 输入和发送
+
+### `src/components/timeline/`
+
+主消息时间线。
+
+- `MainTimeline.tsx`
+- `TimelineTurn.tsx`
+- `TimelineMessageItem.tsx`
+
+### `src/components/agents/`
+
+多智能体状态展示。
+
+- `AgentCardsRow.tsx`
+- `AgentCard.tsx`
+- `AgentDetailPanel.tsx`
+- `agent-activity.ts`
+
+### `src/components/shared-state/`
+
+shared state artifact 展示。
+
+- `SharedStatePanel.tsx`
+- `ArtifactList.tsx`
+- `ArtifactViewer.tsx`
+
+### 其他组件
+
+- `components/status/ConnectionStatus.tsx`：连接状态
+- `components/markdown/MarkdownLite.tsx`：轻量 markdown 渲染
+
+### 测试
+
+- `test/app-reducer.test.ts`
+- `test/components.test.tsx`
+- `test/event-client.test.ts`
+- `test/http-client.test.ts`
+- `test/fixtures.ts`
+
+---
+
+## 10. 推荐阅读路径
+
+### 理解 CLI 主链路
+
+1. `packages/coding-agent/src/cli.ts`
+2. `packages/coding-agent/src/main.ts`
+3. `packages/coding-agent/src/core/agent-session-services.ts`
+4. `packages/coding-agent/src/core/sdk.ts`
+5. `packages/coding-agent/src/core/agent-session.ts`
+6. `packages/agent/src/agent.ts`
+7. `packages/agent/src/agent-loop.ts`
+8. `packages/ai/src/stream.ts`
+
+### 理解工具执行
+
+1. `packages/coding-agent/src/core/tools/index.ts`
+2. `packages/coding-agent/src/core/tools/read.ts`
+3. `packages/coding-agent/src/core/tools/bash.ts`
+4. `packages/coding-agent/src/core/tools/edit.ts`
+5. `packages/coding-agent/src/core/tools/tool-definition-wrapper.ts`
+6. `packages/agent/src/agent-loop.ts`
+
+### 理解扩展系统
+
+1. `packages/coding-agent/src/core/extensions/types.ts`
+2. `packages/coding-agent/src/core/extensions/loader.ts`
+3. `packages/coding-agent/src/core/extensions/runner.ts`
+4. `packages/coding-agent/examples/extensions/README.md`
+5. `packages/coding-agent/examples/extensions/`
+
+### 理解多智能体
+
+1. `packages/multi-agent/src/types.ts`
+2. `packages/multi-agent/src/sub-agent.ts`
+3. `packages/multi-agent/src/run-subagent.ts`
+4. `packages/multi-agent/src/shared-state/types.ts`
+5. `packages/coding-agent/src/core/multi-agent/session-factory.ts`
+6. `packages/coding-agent/src/core/multi-agent/run-subagent-tool.ts`
+7. `packages/coding-agent/src/core/multi-agent/shared-state-tools.ts`
+8. `packages/coding-agent/src/main.ts`
+
+### 理解 Web UI
+
+1. `packages/web-backend/src/server.ts`
+2. `packages/web-backend/src/engines/live-rpc-engine.ts`
+3. `packages/web-backend/src/events/normalize-event.ts`
+4. `packages/web-ui/src/App.tsx`
+5. `packages/web-ui/src/state/app-reducer.ts`
+6. `packages/web-ui/src/components/layout/AppShell.tsx`
+
+### 定位测试
+
+- agent loop：`packages/agent/test/agent-loop.test.ts`
+- coding-agent session/tool/extension：`packages/coding-agent/test/`
+- multi-agent：`packages/coding-agent/test/multi-agent-*.test.ts`
+- web backend：`packages/web-backend/test/`
+- web UI：`packages/web-ui/test/`

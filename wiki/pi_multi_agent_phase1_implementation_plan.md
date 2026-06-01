@@ -1348,7 +1348,7 @@ packages/coding-agent/test/
 | Phase 4 | run_subagent executor | runner 单测覆盖 success/error/timeout/concurrency |
 | Phase 5 | 整体行为测试 | faux provider integration 通过 |
 | Phase 6 | Persistent / Resumable SubAgent Runtime | role-session resume、persistent manifest、busy/close lifecycle、targeted tests 和 `npm run check` 通过 |
-| Phase 7 | run_subagent 事件桥接式 observability | TUI / CLI json 可见 progress snapshot，compact summary 与 targeted tests 通过 |
+| Phase 7 | run_subagent 事件桥接式 observability | TUI 可见 progress snapshot，RPC/Web demo 链路可展示 agent card/detail，targeted tests 和 `npm run check` 通过 |
 
 ---
 
@@ -1682,4 +1682,59 @@ npm run check
 - persistent/resumable runtime。
 - scheduler / queue / bus。
 - Bash/Web/MCP/普通文件工具 delegation。
+```
+
+## Phase 7：run_subagent 事件桥接式 Observability
+
+Phase 7 已完成第一版事件桥接式 observability。目标不是新增 Bus、scheduler 或 sub-agent direct chat，而是把 sub-agent 内部高价值事件投影到现有 `run_subagent` tool streaming update，让 TUI / RPC / Web demo 复用已有展示通道。
+
+已完成：
+
+```text
+- RunSubAgentRunner.run(input, { onEvent }) 支持每次调用级 observer
+- sub-agent session events 被包装为 SubAgentEventEnvelope
+- observer sync throw / async reject 都不会影响 runner final result
+- invoke 完成、失败、timeout 后会 unsubscribe
+- run_subagent tool 把事件归约为 progress snapshot
+- progress 包含 currentPhase / activeTool / completedTools / lastAssistantPreview / eventCount / recentEvents
+- recentEvents 使用 rolling window，默认保留最近 8 条高价值事件
+- tool start/end 展示 argsSummary / resultSummary，并保留受控 args/result 投影供 UI 展开
+- final result 保留 result/sharedStateRoot/definitionSource，并附带 progress
+```
+
+TUI 验收：
+
+```text
+- TUI multi-subagent workflow 已验证正常使用
+- run_subagent tool block 能显示 startedAt / endedAt / durationMs / messages / sharedStateRoot
+- progress update 能显示 phase、activeTool、tool_execution_start/end、assistant preview
+- pm-agent / engineering-agent / synthesis-agent 可完成 shared-state 多轮协作并产出最终 artifact
+```
+
+Web demo 现状：
+
+```text
+sub-agent event
+  -> run_subagent progress
+  -> main tool_execution_update
+  -> web-backend reduceRunSubagentProgress()
+  -> SSE agent.updated
+  -> web-ui agent card / detail panel
+```
+
+`packages/web-backend` 与 `packages/web-ui` 已能展示 agent card、active tool、completed tools、assistant preview 和工具 args/result detail。该 Web 链路是演示/桥接层，不是未来正式 GUI 的必选架构；如果未来做桌面 app 或替代 TUI 的 GUI，可以直接接 Pi runtime / session / role-session API。
+
+已知非阻塞打磨项：
+
+```text
+- Web backend 当前从 rolling recentEvents 生成 agent history；长任务下后续可给 CompactSubAgentEvent 增加稳定 id。
+- progress snapshot 是完整快照，不是增量流；长任务下需要关注单个 args/result/fullText 投影大小。
+- activeTool 当前只表达一个工具；当前 sub-agent 串行 tool loop 下可接受。
+- run_subagent_completed 触发 shared_state.changed paths: [] 全量刷新，简单可靠但不够精确。
+```
+
+当前结论：
+
+```text
+Phase 7 主链路已跑通并通过 TUI 人工验收。后续不建议重做 event system；若继续投入，优先做稳定 event id、投影大小上限，以及面向正式 GUI 的 runtime/session API 设计。
 ```

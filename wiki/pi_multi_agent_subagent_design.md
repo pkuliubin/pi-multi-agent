@@ -1382,6 +1382,32 @@ npm run check
 - main agent 能知道当前有哪些角色、谁在忙、谁可继续调度
 ```
 
+#### Phase 7：事件桥接式 observability
+
+Phase 7 已把 sub-agent 内部高价值事件桥接到 `run_subagent` 的现有 tool streaming update。这个设计保持主 session 语义不变：主 agent transcript 仍只保存 `run_subagent` tool result，sub-agent 完整 trace 仍保存在自己的持久 session file。
+
+事件链路：
+
+```text
+sub-agent agent loop event
+  -> SubAgentEventEnvelope
+  -> run_subagent progress snapshot
+  -> tool_execution_update(run_subagent)
+  -> TUI / RPC / Web demo
+```
+
+已完成语义：
+
+```text
+- observer 是 best-effort；展示失败不影响 sub-agent 执行
+- progress 展示 currentPhase / activeTool / completedTools / assistant preview / recentEvents
+- TUI 可直接通过现有 tool streaming 机制观察 sub-agent progress
+- Web demo 通过 web-backend 把 progress 归约为 agent card / detail panel
+- progress 不是 source of truth；完整 session trace 仍以 sub-agent JSONL session file 为准
+```
+
+Web UI / Web Backend 只是演示与桥接层，不是 multi-agent runtime 的强依赖。未来正式 GUI 或桌面 app 可以直接接 runtime / session / role-session API，而不必复用当前 HTTP + SSE web-backend 形态。
+
 ### 第三期：Shared State Team Coordination
 
 在 persistent/resumable role runtime 稳定后，下一优先级是 Shared State 多轮协作的角色语义与收敛机制，而不是先实现固定 DAG 调度器。
