@@ -189,6 +189,11 @@ function summarizeToolResult(event: SubAgentEventEnvelope["event"]): string | un
 	return truncateSummary(text, 100);
 }
 
+function toolErrorMessage(compact: CompactSubAgentEvent): string | undefined {
+	if (compact.type !== "tool_execution_end" || !compact.isError) return undefined;
+	return compact.resultSummary ?? "error";
+}
+
 function compactEventFromEnvelope(envelope: SubAgentEventEnvelope): CompactSubAgentEvent | undefined {
 	const event = envelope.event;
 	const timestamp = Date.now();
@@ -233,6 +238,8 @@ function reduceProgressSummary(
 	let currentPhase = previous.currentPhase;
 	let activeTool = previous.activeTool;
 	let completedTools = previous.completedTools;
+	let internalToolErrors = previous.internalToolErrors;
+	let lastToolError = previous.lastToolError;
 	let lastAssistantPreview = previous.lastAssistantPreview;
 	let eventCount = previous.eventCount;
 	let recentEvents = previous.recentEvents;
@@ -251,6 +258,11 @@ function reduceProgressSummary(
 			...previous.completedTools,
 			{ toolName: compact.toolName, toolCallId: compact.toolCallId, isError: compact.isError },
 		];
+		const errorMessage = toolErrorMessage(compact);
+		if (errorMessage) {
+			internalToolErrors = (previous.internalToolErrors ?? 0) + 1;
+			lastToolError = { toolName: compact.toolName, toolCallId: compact.toolCallId, message: errorMessage };
+		}
 		if (activeTool?.toolCallId === compact.toolCallId) activeTool = undefined;
 	}
 	if (compact.type === "message_end") {
@@ -261,6 +273,8 @@ function reduceProgressSummary(
 		currentPhase,
 		activeTool,
 		completedTools,
+		internalToolErrors,
+		lastToolError,
 		lastAssistantPreview,
 		eventCount,
 		recentEvents,
@@ -366,7 +380,7 @@ export function createRunSubAgentTool(options: CreateRunSubAgentToolOptions): To
 					: finalProgressSummary(progress, result);
 			if (progressSnapshotChanged(progress, lastEmitted)) emitProgress();
 			return {
-				content: [{ type: "text", text: formatResult(result, sharedStateRoot, definitionSource) }],
+				content: [{ type: "text", text: formatResult(result, sharedStateRoot, definitionSource, progress) }],
 				details: {
 					result,
 					sharedStateRoot,
@@ -445,6 +459,7 @@ function formatResult(
 	result: RunSubAgentToolResult["result"],
 	sharedStateRoot: string,
 	definitionSource: "file" | "demo" | "custom",
+	progress?: RunSubAgentProgressSummary,
 ): string {
 	const durationMs = Math.max(0, result.endedAt - result.startedAt);
 	const header = [
@@ -458,6 +473,12 @@ function formatResult(
 		`endedAt: ${formatTimestamp(result.endedAt)}`,
 		`durationMs: ${durationMs}`,
 		`messages: ${result.messageCountBefore}->${result.messageCountAfter}`,
+		...(progress?.internalToolErrors ? [`internalToolErrors: ${progress.internalToolErrors}`] : []),
+		...(progress?.lastToolError
+			? [
+					`lastToolError: ${progress.lastToolError.toolName} (${progress.lastToolError.toolCallId}) — ${progress.lastToolError.message}`,
+				]
+			: []),
 	];
 	const body = result.finalText ? `\n\n${result.finalText}` : "";
 	const error = result.errorMessage ? `\n\nerror: ${result.errorMessage}` : "";
@@ -486,6 +507,14 @@ function formatRunSubAgentProgress(progress: RunSubAgentProgressSummary): string
 	}
 	if (progress.lastAssistantPreview) {
 		lines.push(`assistant: ${progress.lastAssistantPreview}`);
+	}
+	if (progress.internalToolErrors) {
+		lines.push(`internalToolErrors: ${progress.internalToolErrors}`);
+	}
+	if (progress.lastToolError) {
+		lines.push(
+			`lastToolError: ${progress.lastToolError.toolName} (${progress.lastToolError.toolCallId}) — ${progress.lastToolError.message}`,
+		);
 	}
 	for (const event of progress.recentEvents) {
 		if (event.type === "tool_execution_start" || event.type === "tool_execution_end") {

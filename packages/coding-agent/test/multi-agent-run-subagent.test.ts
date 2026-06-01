@@ -255,6 +255,85 @@ describe("formal run_subagent tool", () => {
 		session.dispose();
 	});
 
+	it("surfaces internal sub-agent tool errors without changing final completion status", async () => {
+		const cwd = createTempDir();
+		const agentDir = join(cwd, "agent");
+		mkdirSync(agentDir, { recursive: true });
+		const sharedStateRoot = join(cwd, "shared-state");
+		const manifest = new MemorySharedStateManifest();
+		const { faux, modelRegistry } = setupModelRegistry();
+		const settingsManager = SettingsManager.create(cwd, agentDir);
+		const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager });
+		await resourceLoader.reload();
+		const updates: Array<{ text: string; details: unknown }> = [];
+		const tool = createObservedRunSubAgentTool(
+			createRunSubAgentTool({
+				cwd,
+				agentDir,
+				sharedStateRoot,
+				manifest,
+				definitions: [
+					{
+						id: "reader",
+						statePolicy: "session",
+						systemPrompt: "Read prd/missing.md, then report done.",
+						accessSurfaces: [
+							{
+								type: "shared_state",
+								grants: [{ space: "*", permissions: ["list", "read", "grep"] }],
+							},
+						],
+					},
+				],
+			}),
+			updates,
+		);
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			model: faux.getModel(),
+			modelRegistry,
+			settingsManager,
+			sessionManager: SessionManager.inMemory(cwd),
+			resourceLoader,
+			noTools: "all",
+			customTools: [tool],
+		});
+		faux.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall("run_subagent", { agentId: "reader", task: "read missing" }, { id: "call-main" }),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage(fauxToolCall("shared_state.read", { path: "prd/missing.md" }, { id: "call-read" }), {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage("done despite missing file"),
+			fauxAssistantMessage("main saw reader result"),
+		]);
+
+		await session.prompt("delegate to reader");
+
+		const toolResult = session.messages.find((message) => isRunSubAgentToolResult(message));
+		expect(toolResult?.details?.result?.status).toBe("completed");
+		expect(toolResult?.details?.progress).toMatchObject({
+			currentPhase: "completed",
+			internalToolErrors: 1,
+			lastToolError: {
+				toolName: "shared_state.read",
+				toolCallId: "call-read",
+			},
+		});
+		expect(toolResult?.details?.progress?.lastToolError?.message).toContain("ENOENT");
+		expect(getMessageText(toolResult)).toContain("internalToolErrors: 1");
+		expect(getMessageText(toolResult)).toContain("lastToolError: shared_state.read");
+		expect(updates.some((update) => update.text.includes("internalToolErrors: 1"))).toBe(true);
+		expect(updates.some((update) => update.text.includes("lastToolError: shared_state.read"))).toBe(true);
+		expect(
+			session.messages.filter((message) => message.role === "toolResult" && message.toolName !== "run_subagent"),
+		).toEqual([]);
+		session.dispose();
+	});
+
 	it("runs a registered sub-agent with explicit shared_state tools and isolated transcript", async () => {
 		const cwd = createTempDir();
 		const agentDir = join(cwd, "agent");

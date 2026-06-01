@@ -62,6 +62,8 @@ export interface RunSubAgentProgressSummary {
 	currentPhase: "starting" | "running" | "completed" | "failed" | "aborted";
 	activeTool?: { toolName: string; toolCallId: string };
 	completedTools: Array<{ toolName: string; toolCallId: string; isError?: boolean }>;
+	internalToolErrors?: number;
+	lastToolError?: { toolName: string; toolCallId: string; message: string };
 	lastAssistantPreview?: string;
 	eventCount: number;
 	recentEvents: CompactSubAgentEvent[];
