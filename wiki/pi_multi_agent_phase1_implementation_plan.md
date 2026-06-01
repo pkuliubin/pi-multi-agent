@@ -1459,6 +1459,7 @@ statePolicy 默认 session；第一版支持 ephemeral/session，不启用 persi
 model: inherit 第一版只记录到 metadata，不改变当前 run_subagent 使用主 session 当前 model/thinkingLevel 的行为。
 有文件化 agents 时，run_subagent 只注册文件化 agents；没有文件化 agents 时 fallback 到 createDemoSubAgentDefinitions()。
 run_subagent promptGuidelines 根据实际 registry 生成可用 agent 列表，并保留 Shared State logical path guidance。
+固定两轮 pm/engineering/synthesis demo workflow 只在 definitionSource=demo 时注入；file-based agents 不再因 id 命中而获得 demo 固定文件名/轮次指引。
 ```
 
 权限策略：
@@ -1471,6 +1472,15 @@ sharedState.writableSpaces 会自动授予所有 Shared State spaces 的 list/re
 Claude-like 高风险或未知 tools（Bash、WebSearch、WebFetch、Read/Grep/Glob、MCP tools 等）加载时 warning + skip。
 普通文件工具不会自动映射为 repo 文件系统权限。
 tools 映射出的 shared_state grant 使用 wildcard space，用于允许显式 logical path 下的 shared_state 调用。
+```
+
+Shared State agent 写入原则：
+
+```text
+Shared State 是团队共享 memory，不是一次性报告目录。
+Agent 应优先更新已有相关 artifact，避免为了形式创建重复文档。
+只有当内容会被后续轮次复用、影响决策、记录关键证据、保留开放问题或更新已有判断时，才写入或更新 artifact。
+文件名和 artifact 组织由 agent 根据任务选择；示例文件名不应被理解为固定产物集合。
 ```
 
 ### 测试与回归

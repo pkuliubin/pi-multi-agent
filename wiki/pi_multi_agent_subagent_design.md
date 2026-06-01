@@ -1541,6 +1541,15 @@ tools: shared_state.read, shared_state.write
 Write artifacts through Shared State.
 ```
 
+Shared State 写入原则：
+
+```text
+Shared State 是团队共享 memory，不是一次性报告目录。
+Agent 应优先更新已有相关 artifact，避免为了形式创建重复文档。
+只有当内容会被后续轮次复用、影响决策、记录关键证据、保留开放问题或更新已有判断时，才写入或更新 artifact。
+文件名和 artifact 组织由 agent 根据任务选择；不要把示例文件名当成固定产物集合。
+```
+
 安全边界：
 
 ```text
@@ -1554,8 +1563,7 @@ Sub-agent 默认不开放 write/edit/bash；需要写协作产物时应使用 sh
 Shared State 路径边界：
 
 ```text
-prd/pm.md、analysis/engineering.md、summary/final.md 是 Shared State logical path。
-这些 logical path 不是 repo cwd 相对路径，sub-agent 应通过 shared_state.* tools 访问。
+Shared State logical path 不是 repo cwd 相对路径，sub-agent 应通过 shared_state.* tools 访问。
 run_subagent result 会展示 sharedStateRoot，方便主 agent 或人工调试时定位物理文件。
 physical root 不作为 sub-agent API 暴露；sub-agent 协作协议仍以 logical path 为准。
 ```

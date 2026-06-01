@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveRunSubAgentDefinitions } from "../src/core/multi-agent/index.ts";
+import { createRunSubAgentTool, resolveRunSubAgentDefinitions } from "../src/core/multi-agent/index.ts";
 
 describe("run_subagent definition source selection", () => {
 	it("uses file definitions without mixing demo agents when any file agent exists", () => {
@@ -22,5 +22,31 @@ describe("run_subagent definition source selection", () => {
 			"pm-agent",
 			"synthesis-agent",
 		]);
+	});
+
+	it("only injects fixed demo workflow guidance for demo definitions", () => {
+		const demoDefinitions = resolveRunSubAgentDefinitions({ loadedDefinitions: [] }).definitions;
+		const fileDefinitions = demoDefinitions.map((definition) => ({
+			...definition,
+			metadata: { sourcePath: `/tmp/${definition.id}.md` },
+		}));
+
+		const demoTool = createRunSubAgentTool({
+			cwd: "/tmp/project",
+			mainSessionId: "main",
+			definitions: demoDefinitions,
+		});
+		const fileTool = createRunSubAgentTool({
+			cwd: "/tmp/project",
+			mainSessionId: "main",
+			definitions: fileDefinitions,
+		});
+
+		expect(
+			demoTool.promptGuidelines?.some((guideline) => guideline.includes("round 1 pm-agent writes prd/pm.md")),
+		).toBe(true);
+		expect(
+			fileTool.promptGuidelines?.some((guideline) => guideline.includes("round 1 pm-agent writes prd/pm.md")),
+		).toBe(false);
 	});
 });

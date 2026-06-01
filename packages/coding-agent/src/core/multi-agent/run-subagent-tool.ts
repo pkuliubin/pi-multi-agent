@@ -329,7 +329,7 @@ export function createRunSubAgentTool(options: CreateRunSubAgentToolOptions): To
 			"Run a registered Pi sub-agent. Sub-agents have isolated sessions, default read-only filesystem tools (read/grep/find/ls), and explicitly granted capabilities such as shared_state tools. For multi-round Shared State work, call sub-agents in explicit rounds and require them to write concise artifacts to their assigned paths.",
 		promptSnippet:
 			"Run registered sub-agents with isolated sessions, read-only filesystem tools, and explicit Shared State access",
-		promptGuidelines: buildPromptGuidelines(options.definitions),
+		promptGuidelines: buildPromptGuidelines(options.definitions, definitionSource),
 		parameters: runSubAgentSchema,
 		executionMode: "parallel",
 		async execute(_toolCallId, params: RunSubAgentToolInput, signal, onUpdate, ctx) {
@@ -417,7 +417,10 @@ function inferDefinitionSource(definitions: PiSubAgentDefinition[]): "file" | "d
 	return "custom";
 }
 
-function buildPromptGuidelines(definitions: PiSubAgentDefinition[]): string[] {
+function buildPromptGuidelines(
+	definitions: PiSubAgentDefinition[],
+	definitionSource: "file" | "demo" | "custom",
+): string[] {
 	const agentList = definitions
 		.map((definition) => {
 			const description = definition.description ? ` — ${definition.description}` : "";
@@ -436,7 +439,7 @@ function buildPromptGuidelines(definitions: PiSubAgentDefinition[]): string[] {
 		"Do not run a dependent sub-agent before the artifact it needs exists. If the user asks for multiple rounds, wait for each round's run_subagent results before starting the next dependent round.",
 		"Always require concise artifacts, roughly 8-15 lines, unless the user explicitly asks for a long document.",
 	];
-	if (hasDemoWorkflow) {
+	if (definitionSource === "demo" && hasDemoWorkflow) {
 		guidelines.splice(
 			3,
 			0,
