@@ -6,7 +6,7 @@ import type { PiSubAgentDefinition, SubAgentPhase } from "./types.ts";
 const INDEX_VERSION = 1;
 
 export interface SubAgentDefinitionIdentity {
-	source: "file" | "demo" | "custom";
+	source: "file" | "custom";
 	fingerprint: string;
 	sourcePath?: string;
 }
@@ -117,7 +117,7 @@ export class FileRoleSessionIndex {
 
 export function createDefinitionIdentity(
 	definition: PiSubAgentDefinition,
-	definitionSource: "file" | "demo" | "custom" = inferDefinitionSource(definition),
+	definitionSource: "file" | "custom" = inferDefinitionSource(definition),
 ): SubAgentDefinitionIdentity {
 	const sourcePath = typeof definition.metadata?.sourcePath === "string" ? definition.metadata.sourcePath : undefined;
 	const fingerprint = hashJson({
@@ -134,7 +134,7 @@ export function defaultRoleSessionIndexPath(cwd: string): string {
 	return resolve(cwd, ".pi", "multi-agent", "role-sessions.json");
 }
 
-function inferDefinitionSource(definition: PiSubAgentDefinition): "file" | "demo" | "custom" {
+function inferDefinitionSource(definition: PiSubAgentDefinition): "file" | "custom" {
 	return typeof definition.metadata?.sourcePath === "string" ? "file" : "custom";
 }
 
@@ -182,7 +182,7 @@ function isDefinitionIdentity(value: unknown): value is SubAgentDefinitionIdenti
 	if (typeof value !== "object" || value === null) return false;
 	const candidate = value as Record<string, unknown>;
 	return (
-		(candidate.source === "file" || candidate.source === "demo" || candidate.source === "custom") &&
+		(candidate.source === "file" || candidate.source === "custom") &&
 		typeof candidate.fingerprint === "string" &&
 		(candidate.sourcePath === undefined || typeof candidate.sourcePath === "string")
 	);

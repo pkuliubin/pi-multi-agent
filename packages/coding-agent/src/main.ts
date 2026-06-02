@@ -99,6 +99,11 @@ function isTruthyEnvFlag(value: string | undefined): boolean {
 	return value === "1" || value.toLowerCase() === "true" || value.toLowerCase() === "yes";
 }
 
+function isFalseyEnvFlag(value: string | undefined): boolean {
+	if (!value) return false;
+	return value === "0" || value.toLowerCase() === "false" || value.toLowerCase() === "no";
+}
+
 type AppMode = "interactive" | "print" | "json" | "rpc";
 
 function resolveAppMode(parsed: Args, stdinIsTTY: boolean): AppMode {
@@ -591,8 +596,8 @@ export async function main(args: string[], options?: MainOptions) {
 			})),
 		);
 
-		if (isTruthyEnvFlag(process.env.PI_MULTI_AGENT_RUN_SUBAGENT)) {
-			const loadedSubAgents = resourceLoader.getSubAgents().agents.map((agent) => agent.definition);
+		const loadedSubAgents = resourceLoader.getSubAgents().agents.map((agent) => agent.definition);
+		if (!isFalseyEnvFlag(process.env.PI_MULTI_AGENT_RUN_SUBAGENT) && loadedSubAgents.length > 0) {
 			const { definitions, definitionSource } = resolveRunSubAgentDefinitions({
 				loadedDefinitions: loadedSubAgents,
 			});

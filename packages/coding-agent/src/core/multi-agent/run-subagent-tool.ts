@@ -42,7 +42,7 @@ export interface CreateRunSubAgentToolOptions {
 	agentDir?: string;
 	definitions: PiSubAgentDefinition[];
 	sharedStateRoot?: string;
-	definitionSource?: "file" | "demo" | "custom";
+	definitionSource?: "file" | "custom";
 	manifest?: SharedStateManifest;
 	mainSessionId?: string;
 	sessionDir?: string;
@@ -54,67 +54,8 @@ export interface RunSubAgentToolDetails extends RunSubAgentToolResult {}
 
 interface RunSubAgentToolDetailsWithRoot extends RunSubAgentToolResult {
 	sharedStateRoot: string;
-	definitionSource: "file" | "demo" | "custom";
+	definitionSource: "file" | "custom";
 	progress: RunSubAgentProgressSummary;
-}
-
-export function createDemoSubAgentDefinitions(): PiSubAgentDefinition[] {
-	return [
-		{
-			id: "pm-agent",
-			name: "PM Agent",
-			description: "Product manager sub-agent that maintains the PM PRD draft.",
-			statePolicy: "session",
-			systemPrompt:
-				"You are pm-agent in a Shared State multi-agent workflow. Always use shared_state tools when asked to create, read, or update artifacts. Your owned artifact is exactly prd/pm.md. Keep it concise: 8-15 lines, not a full long PRD. When creating round 1 content, call shared_state.write for prd/pm.md. When updating round 2 content, first call shared_state.read for analysis/engineering.md, then call shared_state.edit or shared_state.write for prd/pm.md. Do not edit analysis/engineering.md or summary/final.md. End your reply with the exact path you wrote.",
-			accessSurfaces: [
-				{
-					type: "shared_state",
-					grants: [
-						{ space: "prd", permissions: ["list", "read", "grep", "write", "edit"] },
-						{ space: "analysis", permissions: ["list", "read", "grep"] },
-						{ space: "summary", permissions: ["list", "read", "grep"] },
-					],
-				},
-			],
-		},
-		{
-			id: "engineering-agent",
-			name: "Engineering Agent",
-			description: "Engineering sub-agent that maintains implementation analysis.",
-			statePolicy: "session",
-			systemPrompt:
-				"You are engineering-agent in a Shared State multi-agent workflow. Always use shared_state tools when asked to create, read, or update artifacts. Your owned artifact is exactly analysis/engineering.md. Keep it concise: 8-15 lines, focused on implementation feasibility, risks, and dependencies. When creating round 1 content, call shared_state.write for analysis/engineering.md. When updating round 2 content, first call shared_state.read for prd/pm.md, then call shared_state.edit or shared_state.write for analysis/engineering.md. Do not edit prd/pm.md or summary/final.md. End your reply with the exact path you wrote.",
-			accessSurfaces: [
-				{
-					type: "shared_state",
-					grants: [
-						{ space: "prd", permissions: ["list", "read", "grep"] },
-						{ space: "analysis", permissions: ["list", "read", "grep", "write", "edit"] },
-						{ space: "summary", permissions: ["list", "read", "grep"] },
-					],
-				},
-			],
-		},
-		{
-			id: "synthesis-agent",
-			name: "Synthesis Agent",
-			description: "Synthesis sub-agent that reads shared artifacts and writes the final summary.",
-			statePolicy: "ephemeral",
-			systemPrompt:
-				"You are synthesis-agent in a Shared State multi-agent workflow. Always read prd/pm.md and analysis/engineering.md with shared_state.read before writing. Then call shared_state.write for exactly summary/final.md. Keep summary/final.md concise: 8-15 lines with final decision, product summary, engineering constraints, and next steps. Do not edit prd/pm.md or analysis/engineering.md. End your reply with the exact path summary/final.md.",
-			accessSurfaces: [
-				{
-					type: "shared_state",
-					grants: [
-						{ space: "prd", permissions: ["list", "read", "grep"] },
-						{ space: "analysis", permissions: ["list", "read", "grep"] },
-						{ space: "summary", permissions: ["list", "read", "grep", "write", "edit"] },
-					],
-				},
-			],
-		},
-	];
 }
 
 export function defaultSharedStateRoot(cwd: string, sessionId: string): string {
@@ -403,50 +344,32 @@ export function createRunSubAgentTool(options: CreateRunSubAgentToolOptions): To
 	});
 }
 
-function inferDefinitionSource(definitions: PiSubAgentDefinition[]): "file" | "demo" | "custom" {
+function inferDefinitionSource(definitions: PiSubAgentDefinition[]): "file" | "custom" {
 	if (
 		definitions.length > 0 &&
 		definitions.every((definition) => typeof definition.metadata?.sourcePath === "string")
 	) {
 		return "file";
 	}
-	const ids = new Set(definitions.map((definition) => definition.id));
-	if (ids.size === 3 && ids.has("pm-agent") && ids.has("engineering-agent") && ids.has("synthesis-agent")) {
-		return "demo";
-	}
 	return "custom";
 }
 
-function buildPromptGuidelines(
-	definitions: PiSubAgentDefinition[],
-	definitionSource: "file" | "demo" | "custom",
-): string[] {
+function buildPromptGuidelines(definitions: PiSubAgentDefinition[], _definitionSource: "file" | "custom"): string[] {
 	const agentList = definitions
 		.map((definition) => {
 			const description = definition.description ? ` — ${definition.description}` : "";
 			return `${definition.id}${description}`;
 		})
 		.join("; ");
-	const hasDemoWorkflow = ["pm-agent", "engineering-agent", "synthesis-agent"].every((id) =>
-		definitions.some((definition) => definition.id === id),
-	);
-	const guidelines = [
+	return [
 		`Use run_subagent when the user asks to delegate work to a registered sub-agent. Registered sub-agents: ${agentList || "none"}.`,
 		"Sub-agents can use ordinary read, grep, find, and ls tools for read-only filesystem inspection using the same cwd and absolute path behavior as the main session.",
 		"Sub-agents do not have ordinary write, edit, or bash tools by default; ask them to write collaboration artifacts through shared_state.* tools.",
 		"For Shared State collaboration, do not ask sub-agents for long prose in the tool result; ask them to write concise artifacts and return the path they changed.",
-		"Shared State paths such as prd/pm.md, analysis/engineering.md, and summary/final.md are logical artifact paths, not repository-relative paths. Do not use ordinary read/grep/find/ls tools on those logical paths unless you first combine them with the sharedStateRoot shown in the run_subagent result.",
+		"Shared State paths are logical artifact paths, not repository-relative paths. Do not use ordinary read/grep/find/ls tools on those logical paths unless you first combine them with the sharedStateRoot shown in the run_subagent result.",
 		"Do not run a dependent sub-agent before the artifact it needs exists. If the user asks for multiple rounds, wait for each round's run_subagent results before starting the next dependent round.",
 		"Always require concise artifacts, roughly 8-15 lines, unless the user explicitly asks for a long document.",
 	];
-	if (definitionSource === "demo" && hasDemoWorkflow) {
-		guidelines.splice(
-			3,
-			0,
-			"For the pm/engineering/synthesis workflow, use this order: round 1 pm-agent writes prd/pm.md and engineering-agent writes analysis/engineering.md; round 2 pm-agent reads analysis/engineering.md and updates prd/pm.md, then engineering-agent reads prd/pm.md and updates analysis/engineering.md; final synthesis-agent reads both and writes summary/final.md.",
-		);
-	}
-	return guidelines;
 }
 
 function createToolsForAccessSurface(
@@ -464,7 +387,7 @@ function createToolsForAccessSurface(
 function formatResult(
 	result: RunSubAgentToolResult["result"],
 	sharedStateRoot: string,
-	definitionSource: "file" | "demo" | "custom",
+	definitionSource: "file" | "custom",
 	progress?: RunSubAgentProgressSummary,
 ): string {
 	const durationMs = Math.max(0, result.endedAt - result.startedAt);

@@ -89,7 +89,7 @@ export type RunSubAgentSessionFactory = AgentSessionFactory | SubAgentInstanceFa
 export interface SubAgentRoleSessionBinding {
 	mainSessionId: string;
 	definitionIdentity: {
-		source: "file" | "demo" | "custom";
+		source: "file" | "custom";
 		fingerprint: string;
 		sourcePath?: string;
 	};
@@ -128,7 +128,7 @@ export interface RunSubAgentRunnerOptions {
 	thinkingLevel?: unknown;
 	maxConcurrentSubAgents?: number;
 	mainSessionId?: string;
-	definitionSource?: "file" | "demo" | "custom";
+	definitionSource?: "file" | "custom";
 	lifecycleStore?: SubAgentLifecycleStore;
 	createAccessSurfaceTools?: (input: {
 		definition: PiSubAgentDefinition;

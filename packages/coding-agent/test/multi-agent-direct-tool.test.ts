@@ -138,10 +138,21 @@ describe("direct multi-agent run_subagent tool", () => {
 		session.dispose();
 	});
 
-	it("exposes run_subagent in CLI print sessions when the env flag is enabled", async () => {
+	it("exposes run_subagent in CLI print sessions by default", async () => {
 		const cwd = createTempDir();
 		const agentDir = join(cwd, "agent");
+		mkdirSync(join(cwd, ".pi", "agents"), { recursive: true });
 		mkdirSync(agentDir, { recursive: true });
+		writeFileSync(
+			join(cwd, ".pi", "agents", "cli-agent.md"),
+			`---
+id: cli-agent
+description: CLI test sub-agent
+---
+Return the requested CLI sub-agent result.
+`,
+			"utf-8",
+		);
 		const extensionPath = join(cwd, "faux-extension.ts");
 		writeFileSync(
 			extensionPath,
@@ -172,11 +183,11 @@ export default function(pi) {
     baseUrl: "http://localhost:0",
     apiKey: "faux-key",
     api: "faux",
-    streamSimple: () => {
-      const current = callCount++;
-      if (current === 0) {
-        return responseStream(fauxAssistantMessage(fauxToolCall("run_subagent", { task: "return cli-subagent-ok" }, { id: "call-cli-sub" }), { stopReason: "toolUse" }));
-      }
+	    streamSimple: () => {
+	      const current = callCount++;
+	      if (current === 0) {
+	        return responseStream(fauxAssistantMessage(fauxToolCall("run_subagent", { agentId: "cli-agent", task: "return cli-subagent-ok" }, { id: "call-cli-sub" }), { stopReason: "toolUse" }));
+	      }
       if (current === 1) {
         return responseStream(fauxAssistantMessage("cli-subagent-ok"));
       }
@@ -211,7 +222,8 @@ export default function(pi) {
 			{
 				...process.env,
 				[ENV_AGENT_DIR]: agentDir,
-				PI_MULTI_AGENT_DIRECT_SUBAGENT: "1",
+				PI_MULTI_AGENT_RUN_SUBAGENT: undefined,
+				PI_MULTI_AGENT_DIRECT_SUBAGENT: undefined,
 				TEST_CWD: cwd,
 				TSX_TSCONFIG_PATH: resolve(__dirname, "../../../tsconfig.json"),
 			},
@@ -223,7 +235,85 @@ export default function(pi) {
 STDOUT:
 ${result.stdout}`,
 		).toMatchObject({ code: 0 });
-		expect(result.stdout).toContain("main saw cli-subagent-ok");
+		expect(result.stdout).toContain("cli-subagent-ok");
+		expect(result.stderr).not.toContain("Error:");
+	});
+
+	it("allows disabling run_subagent in CLI print sessions with PI_MULTI_AGENT_RUN_SUBAGENT=0", async () => {
+		const cwd = createTempDir();
+		const agentDir = join(cwd, "agent");
+		mkdirSync(agentDir, { recursive: true });
+		const extensionPath = join(cwd, "faux-extension.ts");
+		writeFileSync(
+			extensionPath,
+			`import { createAssistantMessageEventStream, fauxAssistantMessage } from "@earendil-works/pi-ai";
+function responseStream(message) {
+  const stream = createAssistantMessageEventStream();
+  queueMicrotask(() => {
+    for (let index = 0; index < message.content.length; index++) {
+      const block = message.content[index];
+      if (block.type === "text") {
+        stream.push({ type: "text_start", contentIndex: index, partial: { ...message, content: [] } });
+        stream.push({ type: "text_delta", contentIndex: index, delta: block.text, partial: message });
+        stream.push({ type: "text_end", contentIndex: index, content: block.text, partial: message });
+      }
+    }
+    stream.push({ type: "done", reason: message.stopReason, message });
+    stream.end(message);
+  });
+  return stream;
+}
+export default function(pi) {
+  pi.registerProvider("cli-faux-disabled", {
+    baseUrl: "http://localhost:0",
+    apiKey: "faux-key",
+    api: "faux",
+    streamSimple: () => responseStream(fauxAssistantMessage("disabled ok")),
+    models: [{
+      id: "cli-faux-disabled-1",
+      name: "CLI Faux Disabled",
+      reasoning: false,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 128000,
+      maxTokens: 4096,
+    }],
+  });
+}
+`,
+			"utf-8",
+		);
+
+		const result = await runCliWithEnv(
+			[
+				"--extension",
+				extensionPath,
+				"--provider",
+				"cli-faux-disabled",
+				"--model",
+				"cli-faux-disabled-1",
+				"--no-tools",
+				"-p",
+				"respond without sub-agent",
+			],
+			{
+				...process.env,
+				[ENV_AGENT_DIR]: agentDir,
+				PI_MULTI_AGENT_RUN_SUBAGENT: "0",
+				PI_MULTI_AGENT_DIRECT_SUBAGENT: undefined,
+				TEST_CWD: cwd,
+				TSX_TSCONFIG_PATH: resolve(__dirname, "../../../tsconfig.json"),
+			},
+		);
+
+		expect(
+			result,
+			`${result.stderr}
+STDOUT:
+${result.stdout}`,
+		).toMatchObject({ code: 0 });
+		expect(result.stdout).toContain("disabled ok");
+		expect(result.stdout).not.toContain("run_subagent");
 		expect(result.stderr).not.toContain("Error:");
 	});
 });
