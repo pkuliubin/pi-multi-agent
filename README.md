@@ -120,14 +120,6 @@ Please call suitable sub-agents in parallel:
 Each sub-agent should write its result to Shared State. Finally, summarize the decision and list generated files, owners, sessionIds, and message counts.
 ```
 
-## Documentation
-
-Important design notes:
-
-- [`wiki/pi_multi_agent_subagent_design.md`](wiki/pi_multi_agent_subagent_design.md)
-- [`wiki/pi_multi_agent_phase7_observability_plan.md`](wiki/pi_multi_agent_phase7_observability_plan.md)
-- [`wiki/code_map.md`](wiki/code_map.md)
-
 ## Packages
 
 | Package | Description |
