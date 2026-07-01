@@ -1,0 +1,30 @@
+{
+	"name": "@earendil-works/pi-web-ui",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"clean": "shx rm -rf dist",
+		"dev": "vite",
+		"build": "tsc -p tsconfig.json --noEmit && vite build",
+		"preview": "vite preview",
+		"test": "vitest --run",
+		"check": "npm run build && npm run test"
+	},
+	"dependencies": {
+		"react": "19.2.3",
+		"react-dom": "19.2.3"
+	},
+	"devDependencies": {
+		"@types/react": "19.2.7",
+		"@types/react-dom": "19.2.3",
+		"@vitejs/plugin-react": "5.1.1",
+		"jsdom": "27.3.0",
+		"typescript": "5.9.3",
+		"vite": "7.3.0",
+		"vitest": "3.2.4"
+	},
+	"engines": {
+		"node": ">=22.19.0"
+	}
+}

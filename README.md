@@ -1,88 +1,156 @@
-<p align="center">
-  <a href="https://pi.dev">
-    <img alt="pi logo" src="https://pi.dev/logo-auto.svg" width="128">
-  </a>
-</p>
-<p align="center">
-  <a href="https://discord.com/invite/3cU7Bz4UPx"><img alt="Discord" src="https://img.shields.io/badge/discord-community-5865F2?style=flat-square&logo=discord&logoColor=white" /></a>
-</p>
-<p align="center">
-  <a href="https://pi.dev">pi.dev</a> domain graciously donated by
-  <br /><br />
-  <a href="https://exe.dev"><img src="packages/coding-agent/docs/images/exy.png" alt="Exy mascot" width="48" /><br />exe.dev</a>
-</p>
+# Pi Multi-Agent
 
-> New issues and PRs from new contributors are auto-closed by default. Maintainers review auto-closed issues daily. See [CONTRIBUTING.md](CONTRIBUTING.md).
+This repository is a multi-agent fork of the Pi agent harness. It keeps the original Pi coding-agent runtime and adds a shared-state sub-agent layer for role-based collaboration.
 
----
+The current focus is not a new scheduler or agent-to-agent chat system. The core model is:
 
-# Pi Agent Harness Mono Repo
+```text
+main agent = coordinator
+sub-agent = role worker
+shared state = team memory / artifact workspace
+```
 
-This is the home of the pi agent harness project including our self extensible coding agent.
+## What This Adds
 
-* **[@earendil-works/pi-coding-agent](packages/coding-agent)**: Interactive coding agent CLI
-* **[@earendil-works/pi-agent-core](packages/agent)**: Agent runtime with tool calling and state management
-* **[@earendil-works/pi-ai](packages/ai)**: Unified multi-provider LLM API (OpenAI, Anthropic, Google, …)
+- File-based sub-agent definitions from `.pi/agents/*.md` and `~/.pi/agent/agents/*.md`.
+- `run_subagent` tool for the main agent to delegate work to role-specific sub-agents.
+- Persistent role sessions scoped by `mainSessionId + agentId + definitionIdentity`.
+- Shared State artifacts with owner/version/provenance metadata.
+- Default Shared State permission shorthand:
+  ```yaml
+  sharedState:
+    writableSpaces: [prd]
+  ```
+  This means the agent can read/list/grep all shared-state spaces and write/edit only its owned spaces.
+- Sub-agent observability through existing tool streaming updates in the TUI.
+- Default read-only filesystem tools for sub-agents: `ls`, `read`, `grep`, `find`.
+- Explicit per-agent skill inheritance through agent frontmatter.
 
-To learn more about pi:
+## Current Product-Team Agents
 
-* [Visit pi.dev](https://pi.dev), the project website with demos
-* [Read the documentation](https://pi.dev/docs/latest), but you can also ask the agent to explain itself
+Sample role definitions live in [`sample_agents`](sample_agents):
 
-## Share your OSS coding agent sessions
+- `pm-agent`: product direction, user value, MVP scope, tradeoffs, product critique.
+- `research-agent`: users, market/category signals, alternatives, evidence quality, validation path.
+- `design-agent`: user journey, information architecture, interaction states, UX quality, visual direction.
+- `engineering-agent`: code-grounded feasibility, architecture, complexity, implementation risk, testing.
 
-If you use pi or other coding agents for open source work, please share your sessions.
+Install or copy these definitions into:
 
-Public OSS session data helps improve coding agents with real-world tasks, tool use, failures, and fixes instead of toy benchmarks.
+```text
+~/.pi/agent/agents/*.md
+```
 
-For the full explanation, see [this post on X](https://x.com/badlogicgames/status/2037811643774652911).
+or project-local:
 
-To publish sessions, use [`badlogic/pi-share-hf`](https://github.com/badlogic/pi-share-hf). Read its README.md for setup instructions. All you need is a Hugging Face account, the Hugging Face CLI, and `pi-share-hf`.
+```text
+.pi/agents/*.md
+```
 
-You can also watch [this video](https://x.com/badlogicgames/status/2041151967695634619), where I show how I publish my `pi-mono` sessions.
+## Shared State
 
-I regularly publish my own `pi-mono` work sessions here:
+By default, shared-state artifacts are stored under the current project:
 
-- [badlogicgames/pi-mono on Hugging Face](https://huggingface.co/datasets/badlogicgames/pi-mono)
+```text
+<cwd>/.pi/multi-agent/shared-state/<mainSessionId>
+```
 
-## All Packages
+The role-session index is stored at:
+
+```text
+<cwd>/.pi/multi-agent/role-sessions.json
+```
+
+You can override the shared-state root for smoke tests:
+
+```bash
+PI_MULTI_AGENT_SHARED_STATE_ROOT=/tmp/pi-shared-state pi
+```
+
+Shared State is for reusable team memory, not one-off chat text. A good sub-agent response usually does both:
+
+```text
+1. writes a durable artifact to Shared State
+2. returns a short finalText summary to the main agent
+```
+
+## Running From Source
+
+Install dependencies:
+
+```bash
+npm install --ignore-scripts
+```
+
+Run Pi from source:
+
+```bash
+./pi-test.sh
+```
+
+`pi-test.sh` can be launched from any directory. It runs the repo source code but preserves the shell's current working directory.
+
+A convenient local alias is:
+
+```bash
+alias pi='sh /path/to/pi-multi-agent/pi-test.sh'
+```
+
+Then:
+
+```bash
+cd /path/to/your/project
+pi
+```
+
+## Multi-Agent Smoke Prompt
+
+```text
+Please organize a single-round multi-agent product review.
+
+Product idea:
+Build an AI product decision workbench for indie builders and small teams. Users enter a product idea, and the system asks PM, Research, Design, and Engineering perspectives to analyze it and write reusable Shared State artifacts.
+
+Please call suitable sub-agents in parallel:
+1. pm-agent: users, problem, value proposition, MVP scope, tradeoffs.
+2. research-agent: target users, alternatives, category signals, validation path, risks.
+3. design-agent: user journey, information architecture, key screens, observability experience.
+4. engineering-agent: feasibility, architecture, data model, complexity, risks, MVP implementation cut.
+
+Each sub-agent should write its result to Shared State. Finally, summarize the decision and list generated files, owners, sessionIds, and message counts.
+```
+
+## Packages
 
 | Package | Description |
 |---------|-------------|
-| **[@earendil-works/pi-ai](packages/ai)** | Unified multi-provider LLM API (OpenAI, Anthropic, Google, etc.) |
-| **[@earendil-works/pi-agent-core](packages/agent)** | Agent runtime with tool calling and state management |
-| **[@earendil-works/pi-coding-agent](packages/coding-agent)** | Interactive coding agent CLI |
-| **[@earendil-works/pi-tui](packages/tui)** | Terminal UI library with differential rendering |
-
-For Slack/chat automation and workflows see [earendil-works/pi-chat](https://github.com/earendil-works/pi-chat).
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines and [AGENTS.md](AGENTS.md) for project-specific rules (for both humans and agents).
+| [`packages/ai`](packages/ai) | Unified multi-provider LLM API |
+| [`packages/agent`](packages/agent) | Agent runtime with tool calling and state management |
+| [`packages/coding-agent`](packages/coding-agent) | Interactive coding agent CLI and multi-agent integration |
+| [`packages/multi-agent`](packages/multi-agent) | Sub-agent runtime, role sessions, Shared State primitives |
+| [`packages/tui`](packages/tui) | Terminal UI library |
 
 ## Development
 
 ```bash
-npm install --ignore-scripts  # Install all dependencies without running lifecycle scripts
-npm run build        # Build all packages
 npm run check        # Lint, format, and type check
-./test.sh            # Run tests (skips LLM-dependent tests without API keys)
-./pi-test.sh         # Run pi from sources (can be run from any directory)
+./test.sh            # Run non-e2e tests
+./pi-test.sh         # Run pi from sources
 ```
 
-## Supply-chain hardening
+For targeted tests, run specific Vitest files from the package root, for example:
 
-We treat npm dependency changes as reviewed code changes.
+```bash
+cd packages/coding-agent
+node ../../node_modules/vitest/dist/cli.js --run test/multi-agent-run-subagent.test.ts
+```
 
-- Direct external dependencies are pinned to exact versions. Internal workspace packages remain version-ranged.
-- `.npmrc` sets `save-exact=true` and `min-release-age=2` to avoid same-day dependency releases during npm resolution.
-- `package-lock.json` is the dependency ground truth. Pre-commit blocks accidental lockfile commits unless `PI_ALLOW_LOCKFILE_CHANGE=1` is set.
-- `npm run check` verifies pinned direct deps, native TypeScript import compatibility, and the generated coding-agent shrinkwrap.
-- The published CLI package includes `packages/coding-agent/npm-shrinkwrap.json`, generated from the root lockfile, to pin transitive deps for npm users.
-- Release smoke tests use `npm run release:local` to build, pack, and create isolated npm and Bun installs outside the repo before publishing.
-- Local release installs, documented npm installs, and `pi update --self` use `--ignore-scripts` where supported.
-- CI installs with `npm ci --ignore-scripts`, and a scheduled GitHub workflow runs `npm audit --omit=dev` plus `npm audit signatures --omit=dev`.
-- Shrinkwrap generation has an explicit allowlist for dependency lifecycle scripts; new lifecycle-script deps fail checks until reviewed.
+## Upstream
+
+This work is based on the Pi agent harness / pi-mono project. The original Pi packages remain the foundation of the runtime, session manager, provider layer, tool loop, and TUI.
+
+- Pi website: <https://pi.dev>
+- Original package scope: `@earendil-works/*`
 
 ## License
 

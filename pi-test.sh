@@ -14,6 +14,13 @@ for arg in "$@"; do
   fi
 done
 
+if [[ "$NO_ENV" != "true" && -f "$SCRIPT_DIR/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$SCRIPT_DIR/.env"
+  set +a
+fi
+
 if [[ "$NO_ENV" == "true" ]]; then
   # Unset API keys (see packages/ai/src/env-api-keys.ts)
   unset ANTHROPIC_API_KEY

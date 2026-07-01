@@ -29,6 +29,11 @@ import { configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { KeybindingsManager } from "./core/keybindings.ts";
 import type { ModelRegistry } from "./core/model-registry.ts";
 import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.ts";
+import {
+	createDirectRunSubAgentTool,
+	createRunSubAgentTool,
+	resolveRunSubAgentDefinitions,
+} from "./core/multi-agent/index.ts";
 import { restoreStdout, takeOverStdout } from "./core/output-guard.ts";
 import type { CreateAgentSessionOptions } from "./core/sdk.ts";
 import {
@@ -92,6 +97,11 @@ function reportDiagnostics(diagnostics: readonly AgentSessionRuntimeDiagnostic[]
 function isTruthyEnvFlag(value: string | undefined): boolean {
 	if (!value) return false;
 	return value === "1" || value.toLowerCase() === "true" || value.toLowerCase() === "yes";
+}
+
+function isFalseyEnvFlag(value: string | undefined): boolean {
+	if (!value) return false;
+	return value === "0" || value.toLowerCase() === "false" || value.toLowerCase() === "no";
 }
 
 type AppMode = "interactive" | "print" | "json" | "rpc";
@@ -376,6 +386,10 @@ function buildSessionOptions(
 		options.tools = [...parsed.tools];
 	}
 
+	if (isTruthyEnvFlag(process.env.PI_MULTI_AGENT_DIRECT_SUBAGENT)) {
+		options.customTools = [...(options.customTools ?? []), createDirectRunSubAgentTool()];
+	}
+
 	return { options, cliThinkingFromModel, diagnostics };
 }
 
@@ -575,6 +589,32 @@ export async function main(args: string[], options?: MainOptions) {
 			settingsManager,
 		);
 		diagnostics.push(...sessionOptionDiagnostics);
+		diagnostics.push(
+			...resourceLoader.getSubAgents().diagnostics.map((diagnostic) => ({
+				type: diagnostic.type === "error" ? ("error" as const) : ("warning" as const),
+				message: diagnostic.path ? `${diagnostic.message}: ${diagnostic.path}` : diagnostic.message,
+			})),
+		);
+
+		const loadedSubAgents = resourceLoader.getSubAgents().agents.map((agent) => agent.definition);
+		if (!isFalseyEnvFlag(process.env.PI_MULTI_AGENT_RUN_SUBAGENT) && loadedSubAgents.length > 0) {
+			const { definitions, definitionSource } = resolveRunSubAgentDefinitions({
+				loadedDefinitions: loadedSubAgents,
+			});
+			sessionOptions.customTools = [
+				...(sessionOptions.customTools ?? []),
+				createRunSubAgentTool({
+					cwd,
+					agentDir,
+					definitions,
+					definitionSource,
+					skills: resourceLoader.getSkills().skills,
+					sharedStateRoot: process.env.PI_MULTI_AGENT_SHARED_STATE_ROOT,
+					mainSessionId: sessionManager.getSessionId(),
+					sessionDir,
+				}),
+			];
+		}
 
 		if (parsed.apiKey) {
 			if (!sessionOptions.model) {

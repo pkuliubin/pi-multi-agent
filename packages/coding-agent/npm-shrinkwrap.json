@@ -10,6 +10,7 @@
 			"license": "MIT",
 			"dependencies": {
 				"@earendil-works/pi-agent-core": "^0.75.5",
+				"@earendil-works/pi-multi-agent": "^0.75.5",
 				"@earendil-works/pi-ai": "^0.75.5",
 				"@earendil-works/pi-tui": "^0.75.5",
 				"@silvia-odwyer/photon-node": "0.3.4",
@@ -504,6 +505,18 @@
 			},
 			"bin": {
 				"pi-ai": "./dist/cli.js"
+			},
+			"engines": {
+				"node": ">=22.19.0"
+			}
+		},
+		"node_modules/@earendil-works/pi-multi-agent": {
+			"version": "0.75.5",
+			"resolved": "https://registry.npmjs.org/@earendil-works/pi-multi-agent/-/pi-multi-agent-0.75.5.tgz",
+			"license": "MIT",
+			"dependencies": {
+				"@earendil-works/pi-agent-core": "^0.75.5",
+				"@earendil-works/pi-ai": "^0.75.5"
 			},
 			"engines": {
 				"node": ">=22.19.0"
