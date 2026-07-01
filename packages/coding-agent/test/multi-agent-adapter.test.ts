@@ -11,6 +11,8 @@ import { ModelRegistry } from "../src/core/model-registry.ts";
 import { adaptAgentSession } from "../src/core/multi-agent/agent-session-adapter.ts";
 import { RestrictedSubAgentResourceLoader } from "../src/core/multi-agent/restricted-resource-loader.ts";
 import { CodingAgentSessionFactory } from "../src/core/multi-agent/session-factory.ts";
+import type { Skill } from "../src/core/skills.ts";
+import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
 import { createHarness, getMessageText } from "./suite/harness.ts";
 
 const createdDirs: string[] = [];
@@ -76,6 +78,19 @@ function toolResult(messages: unknown[], toolName: string): ToolResultMessage | 
 	);
 }
 
+function testSkill(name = "test-skill"): Skill {
+	const baseDir = join(createTempDir(), name);
+	const filePath = join(baseDir, "SKILL.md");
+	return {
+		name,
+		description: "Use for sub-agent skill inheritance tests.",
+		filePath,
+		baseDir,
+		sourceInfo: createSyntheticSourceInfo(filePath, { source: "test" }),
+		disableModelInvocation: false,
+	};
+}
+
 afterEach(() => {
 	while (cleanupCallbacks.length > 0) {
 		cleanupCallbacks.pop()?.();
@@ -120,7 +135,7 @@ describe("coding-agent multi-agent adapter", () => {
 		expect(mainHarness.session.messages).toEqual([]);
 	});
 
-	it("starts with read-only filesystem tools and no discovered resources", async () => {
+	it("starts with read-only filesystem tools and no other discovered resources", async () => {
 		const { session } = await createFauxSubAgent();
 
 		expect(session.getActiveToolNames()).toEqual(["read", "grep", "find", "ls"]);
@@ -130,6 +145,89 @@ describe("coding-agent multi-agent adapter", () => {
 		expect(session.resourceLoader.getThemes().themes).toEqual([]);
 		expect(session.resourceLoader.getAgentsFiles().agentsFiles).toEqual([]);
 		expect(session.resourceLoader.getExtensions().extensions).toEqual([]);
+	});
+
+	it("filters inherited main-session skills through the sub-agent definition", async () => {
+		const skill = testSkill();
+		const otherSkill = testSkill("other-skill");
+		const cwd = createTempDir();
+		const faux = registerFauxProvider();
+		cleanupCallbacks.push(() => faux.unregister());
+		const authStorage = AuthStorage.inMemory();
+		authStorage.setRuntimeApiKey(faux.getModel().provider, "faux-key");
+		const modelRegistry = ModelRegistry.inMemory(authStorage);
+		modelRegistry.registerProvider(faux.getModel().provider, {
+			baseUrl: faux.getModel().baseUrl,
+			apiKey: "faux-key",
+			api: faux.api,
+			models: faux.models.map((model) => ({
+				id: model.id,
+				name: model.name,
+				api: model.api,
+				reasoning: model.reasoning,
+				input: model.input,
+				cost: model.cost,
+				contextWindow: model.contextWindow,
+				maxTokens: model.maxTokens,
+				baseUrl: model.baseUrl,
+			})),
+		});
+
+		const session = await new CodingAgentSessionFactory({ modelRegistry, skills: [skill, otherSkill] }).create({
+			definition: baseDefinition({
+				systemPrompt: "Use inherited skills when relevant.",
+				metadata: { skills: ["test-skill"] },
+			}),
+			cwd,
+			model: faux.getModel(),
+			sessionPolicy: "session",
+		});
+
+		expect(session.resourceLoader.getSkills().skills.map((loadedSkill) => loadedSkill.name)).toEqual(["test-skill"]);
+		expect(session.state.systemPrompt).toContain("<available_skills>");
+		expect(session.state.systemPrompt).toContain("test-skill");
+		expect(session.state.systemPrompt).not.toContain("other-skill");
+		expect(session.resourceLoader.getPrompts().prompts).toEqual([]);
+		expect(session.resourceLoader.getThemes().themes).toEqual([]);
+		expect(session.resourceLoader.getAgentsFiles().agentsFiles).toEqual([]);
+		expect(session.resourceLoader.getExtensions().extensions).toEqual([]);
+	});
+
+	it("does not inject inherited skills when a sub-agent definition declares none", async () => {
+		const skill = testSkill();
+		const cwd = createTempDir();
+		const faux = registerFauxProvider();
+		cleanupCallbacks.push(() => faux.unregister());
+		const authStorage = AuthStorage.inMemory();
+		authStorage.setRuntimeApiKey(faux.getModel().provider, "faux-key");
+		const modelRegistry = ModelRegistry.inMemory(authStorage);
+		modelRegistry.registerProvider(faux.getModel().provider, {
+			baseUrl: faux.getModel().baseUrl,
+			apiKey: "faux-key",
+			api: faux.api,
+			models: faux.models.map((model) => ({
+				id: model.id,
+				name: model.name,
+				api: model.api,
+				reasoning: model.reasoning,
+				input: model.input,
+				cost: model.cost,
+				contextWindow: model.contextWindow,
+				maxTokens: model.maxTokens,
+				baseUrl: model.baseUrl,
+			})),
+		});
+
+		const session = await new CodingAgentSessionFactory({ modelRegistry, skills: [skill] }).create({
+			definition: baseDefinition({ systemPrompt: "No skills declared." }),
+			cwd,
+			model: faux.getModel(),
+			sessionPolicy: "session",
+		});
+
+		expect(session.resourceLoader.getSkills().skills).toEqual([]);
+		expect(session.state.systemPrompt).not.toContain("<available_skills>");
+		expect(session.state.systemPrompt).not.toContain("test-skill");
 	});
 
 	it("can use read-only filesystem tools but not write, edit, or bash", async () => {

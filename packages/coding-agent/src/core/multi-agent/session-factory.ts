@@ -7,12 +7,14 @@ import type { ToolDefinition } from "../extensions/types.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import { createAgentSession } from "../sdk.ts";
 import { SessionManager } from "../session-manager.ts";
+import type { Skill } from "../skills.ts";
 import { createReadOnlyToolDefinitions } from "../tools/index.ts";
 import { type AdaptedAgentSessionLike, adaptAgentSession } from "./agent-session-adapter.ts";
 import { RestrictedSubAgentResourceLoader } from "./restricted-resource-loader.ts";
 
 export interface CodingAgentSessionFactoryOptions {
 	modelRegistry?: ModelRegistry;
+	skills?: Skill[];
 	sessionDir?: string;
 	resolveSessionManager?: (input: CreateSubAgentSessionInput) => SessionManager;
 	resolveRoleSessionBinding?: (input: CreateSubAgentSessionInput) => RoleSessionBinding | undefined;
@@ -87,14 +89,29 @@ function getSubAgentCustomTools(input: CreateSubAgentSessionInput): ToolDefiniti
 	return tools;
 }
 
+function getDefinitionSkillNames(definition: CreateSubAgentSessionInput["definition"]): string[] {
+	const value = definition.metadata?.skills;
+	if (!Array.isArray(value)) return [];
+	return value.filter((item): item is string => typeof item === "string");
+}
+
+function selectSkillsForDefinition(skills: Skill[], definition: CreateSubAgentSessionInput["definition"]): Skill[] {
+	const skillNames = getDefinitionSkillNames(definition);
+	if (skillNames.length === 0) return [];
+	const allowed = new Set(skillNames);
+	return skills.filter((skill) => allowed.has(skill.name));
+}
+
 export class CodingAgentSessionFactory implements AgentSessionFactory {
 	private readonly modelRegistry?: ModelRegistry;
+	private readonly skills: Skill[];
 	private readonly sessionDir?: string;
 	private readonly resolveSessionManager?: (input: CreateSubAgentSessionInput) => SessionManager;
 	private readonly resolveRoleSessionBinding?: (input: CreateSubAgentSessionInput) => RoleSessionBinding | undefined;
 
 	constructor(options: CodingAgentSessionFactoryOptions = {}) {
 		this.modelRegistry = options.modelRegistry;
+		this.skills = options.skills ?? [];
 		this.sessionDir = options.sessionDir;
 		this.resolveSessionManager = options.resolveSessionManager;
 		this.resolveRoleSessionBinding = options.resolveRoleSessionBinding;
@@ -112,7 +129,10 @@ export class CodingAgentSessionFactory implements AgentSessionFactory {
 			thinkingLevel: input.thinkingLevel,
 			modelRegistry: this.modelRegistry,
 			sessionManager: this.createSessionManager(input),
-			resourceLoader: new RestrictedSubAgentResourceLoader({ systemPrompt: input.definition.systemPrompt }),
+			resourceLoader: new RestrictedSubAgentResourceLoader({
+				systemPrompt: input.definition.systemPrompt,
+				skills: selectSkillsForDefinition(this.skills, input.definition),
+			}),
 			customTools,
 			noTools: "all",
 			sessionStartEvent: { type: "session_start", reason: "startup" },
@@ -134,7 +154,7 @@ export class CodingAgentSessionFactory implements AgentSessionFactory {
 
 function assertNoUnsupportedDefinitionResources(metadata: Record<string, unknown> | undefined): void {
 	if (!metadata) return;
-	const unsupportedKeys = ["tools", "skills", "mcp"];
+	const unsupportedKeys = ["tools", "mcp"];
 	const present = unsupportedKeys.filter((key) => metadata[key] !== undefined);
 	if (present.length > 0) {
 		throw new Error(`SubAgent definition resources are not supported in this phase: ${present.join(", ")}`);

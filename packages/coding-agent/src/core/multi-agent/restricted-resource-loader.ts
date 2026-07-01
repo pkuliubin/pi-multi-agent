@@ -1,6 +1,7 @@
 import { createExtensionRuntime } from "../extensions/loader.ts";
 import type { LoadExtensionsResult } from "../extensions/types.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "../resource-loader.ts";
+import type { Skill } from "../skills.ts";
 
 export class RestrictedSubAgentResourceLoader implements ResourceLoader {
 	private readonly extensionsResult: LoadExtensionsResult = {
@@ -9,9 +10,11 @@ export class RestrictedSubAgentResourceLoader implements ResourceLoader {
 		runtime: createExtensionRuntime(),
 	};
 	private readonly systemPrompt: string | undefined;
+	private readonly skills: Skill[];
 
-	constructor(options: { systemPrompt?: string } = {}) {
+	constructor(options: { systemPrompt?: string; skills?: Skill[] } = {}) {
 		this.systemPrompt = options.systemPrompt;
+		this.skills = options.skills ?? [];
 	}
 
 	getExtensions(): LoadExtensionsResult {
@@ -19,7 +22,7 @@ export class RestrictedSubAgentResourceLoader implements ResourceLoader {
 	}
 
 	getSkills(): ReturnType<ResourceLoader["getSkills"]> {
-		return { skills: [], diagnostics: [] };
+		return { skills: this.skills, diagnostics: [] };
 	}
 
 	getPrompts(): ReturnType<ResourceLoader["getPrompts"]> {

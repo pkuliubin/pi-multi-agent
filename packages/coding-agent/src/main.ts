@@ -608,6 +608,7 @@ export async function main(args: string[], options?: MainOptions) {
 					agentDir,
 					definitions,
 					definitionSource,
+					skills: resourceLoader.getSkills().skills,
 					sharedStateRoot: process.env.PI_MULTI_AGENT_SHARED_STATE_ROOT,
 					mainSessionId: sessionManager.getSessionId(),
 					sessionDir,

@@ -18,6 +18,7 @@ import {
 import { Text } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
 import { defineTool, type ToolDefinition, type ToolRenderResultOptions } from "../extensions/types.ts";
+import type { Skill } from "../skills.ts";
 import { getTextOutput } from "../tools/render-utils.ts";
 import { CodingSubAgentLifecycleStore } from "./role-session-store.ts";
 import { CodingAgentSessionFactory } from "./session-factory.ts";
@@ -48,6 +49,7 @@ export interface CreateRunSubAgentToolOptions {
 	sessionDir?: string;
 	roleSessionIndexPath?: string;
 	maxConcurrentSubAgents?: number;
+	skills?: Skill[];
 }
 
 export interface RunSubAgentToolDetails extends RunSubAgentToolResult {}
@@ -280,6 +282,7 @@ export function createRunSubAgentTool(options: CreateRunSubAgentToolOptions): To
 				registry,
 				sessionFactory: new CodingAgentSessionFactory({
 					modelRegistry: ctx.modelRegistry,
+					skills: options.skills,
 					sessionDir: options.sessionDir,
 					resolveRoleSessionBinding: (input) => lifecycleStore?.resolveBinding(input),
 				}),
@@ -362,13 +365,24 @@ function buildPromptGuidelines(definitions: PiSubAgentDefinition[], _definitionS
 		})
 		.join("; ");
 	return [
-		`Use run_subagent when the user asks to delegate work to a registered sub-agent. Registered sub-agents: ${agentList || "none"}.`,
-		"Sub-agents can use ordinary read, grep, find, and ls tools for read-only filesystem inspection using the same cwd and absolute path behavior as the main session.",
-		"Sub-agents do not have ordinary write, edit, or bash tools by default; ask them to write collaboration artifacts through shared_state.* tools.",
-		"For Shared State collaboration, do not ask sub-agents for long prose in the tool result; ask them to write concise artifacts and return the path they changed.",
-		"Shared State paths are logical artifact paths, not repository-relative paths. Do not use ordinary read/grep/find/ls tools on those logical paths unless you first combine them with the sharedStateRoot shown in the run_subagent result.",
-		"Do not run a dependent sub-agent before the artifact it needs exists. If the user asks for multiple rounds, wait for each round's run_subagent results before starting the next dependent round.",
-		"Always require concise artifacts, roughly 8-15 lines, unless the user explicitly asks for a long document.",
+		`<multi_agent_coordination>
+Use run_subagent when delegation to a registered role runtime adds clear value. Registered sub-agents: ${agentList || "none"}.
+Choose sub-agents by their registered descriptions and the user's goal, not by hardcoded role names.
+If a registered sub-agent's description clearly matches a meaningful part of the user's task, prefer delegating that part to the sub-agent instead of doing a weaker version in the main agent.
+Do not use sub-agents for simple questions, tiny edits, or work the main agent can handle directly.
+When invoking multiple sub-agents, first decide whether they need shared context. If yes, prepare a concise shared brief containing the user's goal, relevant repo paths or files, existing Shared State artifacts, known constraints, and expected outputs. Pass this same brief to each sub-agent to reduce duplicated context gathering and improve consistency.
+Do not over-plan simple tasks. Only prepare a shared brief when it will materially reduce duplicated work or improve sub-agent output quality.
+Run independent sub-agent calls in parallel when useful. If one call depends on another's Shared State artifact, run them in explicit rounds and wait for the dependency to exist before starting the dependent call.
+After sub-agent work finishes, use the returned status and Shared State artifacts to give the user a concise final synthesis.</multi_agent_coordination>`,
+		`<shared_state_protocol>
+Shared State is logical team memory for reusable multi-agent artifacts, not repository files and not a place for throwaway prose.
+For collaborative work, ask sub-agents to inspect relevant existing Shared State, create or update compact reusable artifacts, and return concise status plus changed logical paths.
+Shared State logical paths must be accessed through shared_state.* tools inside sub-agents. Do not treat paths like prd/... or analysis/... as cwd-relative repo paths unless you explicitly combine them with the sharedStateRoot shown in a run_subagent result.
+Prefer updating existing relevant artifacts over creating duplicates. Keep artifacts concise unless the user explicitly asks for a long document.</shared_state_protocol>`,
+		`<sub_agent_tool_boundaries>
+Sub-agents can use ordinary read, grep, find, and ls tools for read-only filesystem inspection using the same cwd and absolute path behavior as the main session.
+Sub-agents do not have ordinary write, edit, or bash tools by default; ask them to write collaboration artifacts through their shared_state.* tools.
+The run_subagent tool result is a status channel, not the primary artifact store. Avoid asking sub-agents to return long prose only in the tool result.</sub_agent_tool_boundaries>`,
 	];
 }
 

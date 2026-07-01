@@ -21,6 +21,7 @@ interface AgentFrontmatter extends Record<string, unknown> {
 	statePolicy?: unknown;
 	model?: unknown;
 	color?: unknown;
+	skills?: unknown;
 	tools?: unknown;
 	accessSurfaces?: unknown;
 	grants?: unknown;
@@ -102,6 +103,8 @@ export function parseSubAgentDefinition(
 	const metadata: Record<string, unknown> = { sourcePath: filePath };
 	if (typeof parsed.frontmatter.model === "string") metadata.model = parsed.frontmatter.model;
 	if (typeof parsed.frontmatter.color === "string") metadata.color = parsed.frontmatter.color;
+	const skills = parseStringList(parsed.frontmatter.skills, "skills", filePath, diagnostics);
+	if (skills.length > 0) metadata.skills = skills;
 
 	return {
 		definition: {
@@ -309,6 +312,41 @@ function normalizeTools(value: unknown): string[] {
 			.map((tool) => tool.trim())
 			.filter(Boolean);
 	return [];
+}
+
+function parseStringList(
+	value: unknown,
+	fieldName: string,
+	filePath: string,
+	diagnostics: ResourceDiagnostic[],
+): string[] {
+	if (value === undefined || value === null) return [];
+	let values: unknown[];
+	if (typeof value === "string") {
+		values = value.split(",");
+	} else if (Array.isArray(value)) {
+		values = value;
+	} else {
+		diagnostics.push({
+			type: "warning",
+			message: `Agent ${fieldName} must be a string or string array`,
+			path: filePath,
+		});
+		return [];
+	}
+	const strings: string[] = [];
+	for (const item of values) {
+		if (typeof item !== "string" || item.trim().length === 0) {
+			diagnostics.push({
+				type: "warning",
+				message: `Invalid agent ${fieldName} entry skipped: ${String(item)}`,
+				path: filePath,
+			});
+			continue;
+		}
+		strings.push(item.trim());
+	}
+	return Array.from(new Set(strings));
 }
 
 function mergeSharedStateSurfaces(
