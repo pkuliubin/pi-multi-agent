@@ -78,6 +78,38 @@ describe("web-backend mock API contract", () => {
 		expect(manifest).toEqual({ root: null, artifacts: [] });
 	});
 
+	it("allows local web-ui origins for browser API requests", async () => {
+		const { app } = createWebBackendApp();
+
+		const response = await app.request("/api/state", {
+			headers: { origin: "http://localhost:5173" },
+		});
+		const preflight = await app.request("/api/state", {
+			method: "OPTIONS",
+			headers: {
+				origin: "http://localhost:5173",
+				"access-control-request-method": "GET",
+				"access-control-request-headers": "content-type",
+			},
+		});
+
+		expect(response.headers.get("access-control-allow-origin")).toBe("http://localhost:5173");
+		expect(preflight.status).toBe(204);
+		expect(preflight.headers.get("access-control-allow-origin")).toBe("http://localhost:5173");
+		expect(preflight.headers.get("access-control-allow-methods")).toContain("GET");
+		expect(preflight.headers.get("access-control-allow-headers")).toBe("content-type");
+	});
+
+	it("does not allow arbitrary browser origins", async () => {
+		const { app } = createWebBackendApp();
+
+		const response = await app.request("/api/state", {
+			headers: { origin: "https://example.com" },
+		});
+
+		expect(response.headers.get("access-control-allow-origin")).toBeNull();
+	});
+
 	it("returns SESSION_NOT_STARTED for prompt before start", async () => {
 		const { app } = createWebBackendApp();
 

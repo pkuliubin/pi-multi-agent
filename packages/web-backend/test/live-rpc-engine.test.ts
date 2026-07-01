@@ -120,6 +120,52 @@ describe("LiveRpcEngine", () => {
 				args: { agentId: "pm-agent-v2", invocationId: "pm-1" },
 				partialResult: {
 					details: {
+						observability: {
+							sequenceStart: 1,
+							sequenceEnd: 3,
+							events: [
+								{
+									type: "agent.started",
+									agentId: "pm-agent-v2",
+									sessionId: "sub-session-1",
+									invocationId: "pm-1",
+									sequence: 1,
+									timestamp: "2026-06-01T00:00:00.000Z",
+								},
+								{
+									type: "agent.message.delta",
+									agentId: "pm-agent-v2",
+									sessionId: "sub-session-1",
+									invocationId: "pm-1",
+									messageId: "msg-1",
+									sequence: 2,
+									timestamp: "2026-06-01T00:00:00.100Z",
+									delta: "PM ",
+								},
+								{
+									type: "agent.message.delta",
+									agentId: "pm-agent-v2",
+									sessionId: "sub-session-1",
+									invocationId: "pm-1",
+									messageId: "msg-1",
+									sequence: 3,
+									timestamp: "2026-06-01T00:00:00.150Z",
+									delta: "done",
+								},
+								{
+									type: "agent.tool.started",
+									agentId: "pm-agent-v2",
+									sessionId: "sub-session-1",
+									invocationId: "pm-1",
+									sequence: 4,
+									timestamp: "2026-06-01T00:00:00.200Z",
+									toolName: "shared_state_write",
+									toolCallId: "write-1",
+									status: "running",
+									argsSummary: "path=prd/pm.md",
+								},
+							],
+						},
 						progress: {
 							currentPhase: "running",
 							activeTool: { toolName: "shared_state_write", toolCallId: "write-1" },
@@ -147,6 +193,43 @@ describe("LiveRpcEngine", () => {
 				result: {
 					details: {
 						sharedStateRoot: "/tmp/shared-state",
+						observability: {
+							sequenceStart: 4,
+							sequenceEnd: 6,
+							events: [
+								{
+									type: "agent.tool.completed",
+									agentId: "pm-agent-v2",
+									sessionId: "sub-session-1",
+									invocationId: "pm-1",
+									sequence: 5,
+									timestamp: "2026-06-01T00:00:00.300Z",
+									toolName: "shared_state_write",
+									toolCallId: "write-1",
+									status: "completed",
+									resultSummary: "wrote prd/pm.md",
+								},
+								{
+									type: "agent.message.completed",
+									agentId: "pm-agent-v2",
+									sessionId: "sub-session-1",
+									invocationId: "pm-1",
+									messageId: "msg-1",
+									sequence: 6,
+									timestamp: "2026-06-01T00:00:00.400Z",
+									preview: "PM done",
+									fullTextRef: { kind: "session_message", sessionId: "sub-session-1", messageId: "msg-1" },
+								},
+								{
+									type: "agent.completed",
+									agentId: "pm-agent-v2",
+									sessionId: "sub-session-1",
+									invocationId: "pm-1",
+									sequence: 7,
+									timestamp: "2026-06-01T00:00:00.500Z",
+								},
+							],
+						},
 						result: {
 							agentId: "pm-agent-v2",
 							sessionId: "sub-session-1",
@@ -177,6 +260,19 @@ describe("LiveRpcEngine", () => {
 				lastAssistantPreview: "PM done",
 			});
 			expect(envelopes.some((event) => event.eventType === "agent.updated")).toBe(true);
+			expect(envelopes.filter((event) => event.eventType === "agent.event")).toHaveLength(7);
+			expect(envelopes.some((event) => event.eventType === "agent.message.delta")).toBe(true);
+			expect(envelopes.some((event) => event.eventType === "agent.tool.started")).toBe(true);
+			expect(envelopes.some((event) => event.eventType === "agent.tool.completed")).toBe(true);
+			const historyResponse = await app.request("/api/agents/pm-agent-v2/history");
+			const history = (await historyResponse.json()) as {
+				items: Array<{ invocationId: string | null; type: string; content?: string; status?: string }>;
+			};
+			expect(history.items.map((item) => item.invocationId)).toContain("pm-1");
+			expect(history.items).toHaveLength(2);
+			expect(history.items.map((item) => item.type)).toEqual(["message", "tool_call"]);
+			expect(history.items[0]).toMatchObject({ type: "message", content: "PM done" });
+			expect(history.items[1]).toMatchObject({ type: "tool_call", status: "completed" });
 			expect(envelopes.some((event) => event.eventType === "shared_state.changed")).toBe(true);
 			expect(envelopes.find((event) => event.eventType === "shared_state.changed")?.payload).toEqual({
 				paths: [],

@@ -58,6 +58,57 @@ export type CompactSubAgentEvent =
 	  }
 	| { type: "message_end"; preview: string; fullText?: string; timestamp: number };
 
+export type SubAgentObservabilityEvent =
+	| {
+			type: "agent.started" | "agent.completed" | "agent.failed" | "agent.aborted";
+			agentId: string;
+			sessionId: string;
+			invocationId: string | null;
+			sequence: number;
+			timestamp: string;
+	  }
+	| {
+			type: "agent.message.delta";
+			agentId: string;
+			sessionId: string;
+			invocationId: string | null;
+			messageId: string;
+			sequence: number;
+			timestamp: string;
+			delta: string;
+			truncated?: boolean;
+	  }
+	| {
+			type: "agent.message.completed";
+			agentId: string;
+			sessionId: string;
+			invocationId: string | null;
+			messageId: string;
+			sequence: number;
+			timestamp: string;
+			preview: string;
+			fullTextRef: { kind: "session_message"; sessionId: string; messageId: string };
+	  }
+	| {
+			type: "agent.tool.started" | "agent.tool.updated" | "agent.tool.completed";
+			agentId: string;
+			sessionId: string;
+			invocationId: string | null;
+			sequence: number;
+			timestamp: string;
+			toolName: string;
+			toolCallId: string;
+			argsSummary?: string;
+			resultSummary?: string;
+			status: "running" | "completed" | "failed" | "aborted";
+	  };
+
+export interface SubAgentObservabilityBatch {
+	sequenceStart: number | null;
+	sequenceEnd: number | null;
+	events: SubAgentObservabilityEvent[];
+}
+
 export interface RunSubAgentProgressSummary {
 	currentPhase: "starting" | "running" | "completed" | "failed" | "aborted";
 	activeTool?: { toolName: string; toolCallId: string };
@@ -65,6 +116,8 @@ export interface RunSubAgentProgressSummary {
 	internalToolErrors?: number;
 	lastToolError?: { toolName: string; toolCallId: string; message: string };
 	lastAssistantPreview?: string;
+	verifiedArtifacts?: string[];
+	unverifiedArtifactClaims?: string[];
 	eventCount: number;
 	recentEvents: CompactSubAgentEvent[];
 }

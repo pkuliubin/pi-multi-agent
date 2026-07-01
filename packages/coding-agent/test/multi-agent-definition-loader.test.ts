@@ -240,4 +240,26 @@ accessSurfaces:
 			name: "pm-agent",
 		});
 	});
+
+	it("silently skips identical duplicate agents", async () => {
+		const cwd = tempDir();
+		const agentDir = join(cwd, "user-agent-dir");
+		mkdirSync(join(cwd, ".pi", "agents"), { recursive: true });
+		mkdirSync(join(agentDir, "agents"), { recursive: true });
+		const content = "---\nid: pm-agent\nsharedState:\n  writableSpaces: [prd]\n---\nProject PM";
+		writeFileSync(join(cwd, ".pi", "agents", "pm.md"), content, "utf-8");
+		writeFileSync(join(agentDir, "agents", "pm.md"), content, "utf-8");
+		const loader = new DefaultResourceLoader({
+			cwd,
+			agentDir,
+			settingsManager: SettingsManager.create(cwd, agentDir),
+		});
+
+		await loader.reload();
+
+		const result = loader.getSubAgents();
+		expect(result.agents).toHaveLength(1);
+		expect(result.agents[0]?.definition.systemPrompt).toBe("Project PM");
+		expect(result.diagnostics).toEqual([]);
+	});
 });

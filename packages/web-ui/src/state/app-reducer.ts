@@ -223,13 +223,19 @@ function applySseEnvelope(state: WebUiState, envelope: SseEnvelope): WebUiState 
 
 	switch (envelope.eventType) {
 		case "message.delta":
+		case "agent.message.delta":
 			return applyMessageDelta(baseState, envelope.payload as MessageDeltaPayload, envelope.createdAt);
 		case "message.completed":
 			return upsertMessage(baseState, (envelope.payload as MessageCompletedPayload).message);
 		case "tool.started":
 		case "tool.updated":
 		case "tool.completed":
+		case "agent.tool.started":
+		case "agent.tool.updated":
+		case "agent.tool.completed":
 			return upsertToolEvent(baseState, envelope.payload as ToolEventPayload, envelope.createdAt);
+		case "agent.event":
+			return baseState;
 		case "agent.updated":
 			return upsertAgent(baseState, envelope.payload as AgentUpdatedPayload);
 		case "shared_state.changed":
