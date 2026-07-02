@@ -25,6 +25,8 @@ export type {
 	SubAgentEventEnvelope,
 	SubAgentEventObserver,
 	SubAgentLifecycleStore,
+	SubAgentObservabilityBatch,
+	SubAgentObservabilityEvent,
 	SubAgentRoleSessionBinding,
 } from "./run-subagent-types.ts";
 export type {

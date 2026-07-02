@@ -99,4 +99,48 @@ describe("SessionStore", () => {
 			expect.objectContaining({ status: "completed", args: { path: "prd/pm.md" }, result: "wrote file" }),
 		]);
 	});
+
+	it("merges agent history message deltas by stable message id", () => {
+		const store = new SessionStore();
+		store.appendAgentHistory("pm-agent-v2", [
+			{
+				id: "pm-agent-v2:pm-1:message:msg-1",
+				agentId: "pm-agent-v2",
+				turnId: "turn-1",
+				invocationId: "pm-1",
+				type: "message",
+				role: "assistant",
+				content: "分析",
+				createdAt: "2026-05-28T00:00:01.000Z",
+			},
+		]);
+		store.appendAgentHistory("pm-agent-v2", [
+			{
+				id: "pm-agent-v2:pm-1:message:msg-1",
+				agentId: "pm-agent-v2",
+				turnId: "turn-1",
+				invocationId: "pm-1",
+				type: "message",
+				role: "assistant",
+				content: "已完成",
+				createdAt: "2026-05-28T00:00:02.000Z",
+			},
+		]);
+		store.appendAgentHistory("pm-agent-v2", [
+			{
+				id: "pm-agent-v2:pm-1:message:msg-1",
+				agentId: "pm-agent-v2",
+				turnId: "turn-1",
+				invocationId: "pm-1",
+				type: "message",
+				role: "assistant",
+				content: "分析已完成",
+				createdAt: "2026-05-28T00:00:03.000Z",
+			},
+		]);
+
+		expect(store.getAgentHistory("pm-agent-v2").items).toEqual([
+			expect.objectContaining({ type: "message", content: "分析已完成" }),
+		]);
+	});
 });

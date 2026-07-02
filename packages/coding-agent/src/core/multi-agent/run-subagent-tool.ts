@@ -13,6 +13,8 @@ import {
 	type SharedStateManifest,
 	type SubAgentAccessSurfaceDefinition,
 	type SubAgentEventEnvelope,
+	type SubAgentObservabilityBatch,
+	type SubAgentObservabilityEvent,
 	SubAgentRegistry,
 } from "@earendil-works/pi-multi-agent";
 import { Text } from "@earendil-works/pi-tui";
@@ -33,7 +35,12 @@ const runSubAgentSchema = Type.Object({
 			description: "Optional state policy override for this invocation.",
 		}),
 	),
-	timeoutMs: Type.Optional(Type.Number({ description: "Optional sub-agent invocation timeout in milliseconds." })),
+	timeoutMs: Type.Optional(
+		Type.Number({
+			description:
+				"Optional sub-agent invocation timeout in milliseconds. Omit this for complex work; short positive values are raised to the runtime minimum.",
+		}),
+	),
 });
 
 type RunSubAgentToolInput = Static<typeof runSubAgentSchema>;
@@ -58,7 +65,33 @@ interface RunSubAgentToolDetailsWithRoot extends RunSubAgentToolResult {
 	sharedStateRoot: string;
 	definitionSource: "file" | "custom";
 	progress: RunSubAgentProgressSummary;
+	artifactVerification: ArtifactVerificationSummary;
+	observability?: SubAgentObservabilityBatch;
 }
+
+interface ObservabilityState {
+	nextSequence: number;
+}
+
+interface ArtifactVerificationState {
+	verifiedArtifacts: Set<string>;
+	pendingMutationPaths: Map<string, string>;
+}
+
+interface ArtifactVerificationSummary {
+	verifiedArtifacts: string[];
+	unverifiedArtifactClaims: string[];
+}
+
+const MAX_DELTA_CHARS = 4096;
+const MAX_PREVIEW_CHARS = 500;
+const MIN_SUB_AGENT_TIMEOUT_MS = 10 * 60 * 1000;
+const SHARED_STATE_MUTATION_TOOLS = new Set([
+	"shared_state.write",
+	"shared_state.edit",
+	"shared_state_write",
+	"shared_state_edit",
+]);
 
 export function defaultSharedStateRoot(cwd: string, sessionId: string): string {
 	return path.join(cwd, ".pi", "multi-agent", "shared-state", sessionId);
@@ -164,6 +197,29 @@ function compactEventFromEnvelope(envelope: SubAgentEventEnvelope): CompactSubAg
 	return undefined;
 }
 
+function sharedStatePathFromEvent(event: SubAgentEventEnvelope["event"]): string | undefined {
+	if (event.type !== "tool_execution_start" && event.type !== "tool_execution_end") return undefined;
+	if (!SHARED_STATE_MUTATION_TOOLS.has(String(event.toolName))) return undefined;
+	const args = event.args;
+	if (!args || typeof args !== "object") return undefined;
+	const pathValue = (args as Record<string, unknown>).path;
+	return typeof pathValue === "string" ? normalizeArtifactClaim(pathValue) : undefined;
+}
+
+function recordVerifiedArtifact(envelope: SubAgentEventEnvelope, state: ArtifactVerificationState): void {
+	const event = envelope.event;
+	if (event.type === "tool_execution_start") {
+		const artifactPath = sharedStatePathFromEvent(event);
+		if (artifactPath) state.pendingMutationPaths.set(String(event.toolCallId), artifactPath);
+		return;
+	}
+	if (event.type !== "tool_execution_end") return;
+	const toolCallId = String(event.toolCallId);
+	const artifactPath = sharedStatePathFromEvent(event) ?? state.pendingMutationPaths.get(toolCallId);
+	state.pendingMutationPaths.delete(toolCallId);
+	if (!event.isError && artifactPath) state.verifiedArtifacts.add(artifactPath);
+}
+
 function initialProgressSummary(): RunSubAgentProgressSummary {
 	return {
 		currentPhase: "starting",
@@ -227,12 +283,15 @@ function reduceProgressSummary(
 function finalProgressSummary(
 	progress: RunSubAgentProgressSummary,
 	result: RunSubAgentToolResult["result"],
+	artifactVerification?: ArtifactVerificationSummary,
 ): RunSubAgentProgressSummary {
 	return {
 		...progress,
 		currentPhase: result.status,
 		activeTool: undefined,
 		lastAssistantPreview: result.finalText ? truncatePreview(result.finalText) : progress.lastAssistantPreview,
+		verifiedArtifacts: artifactVerification?.verifiedArtifacts,
+		unverifiedArtifactClaims: artifactVerification?.unverifiedArtifactClaims,
 	};
 }
 
@@ -248,6 +307,167 @@ function busyProgressSummary(result: RunSubAgentToolResult["result"]): RunSubAge
 
 function progressSnapshotChanged(a: RunSubAgentProgressSummary, b: RunSubAgentProgressSummary): boolean {
 	return JSON.stringify(a) !== JSON.stringify(b);
+}
+
+function normalizeRunSubAgentInput(params: RunSubAgentToolInput): RunSubAgentInput {
+	const input = params as RunSubAgentInput;
+	if (input.timeoutMs === undefined || input.timeoutMs <= 0) return input;
+	return { ...input, timeoutMs: Math.max(input.timeoutMs, MIN_SUB_AGENT_TIMEOUT_MS) };
+}
+
+function createObservabilityBatch(events: SubAgentObservabilityEvent[]): SubAgentObservabilityBatch | undefined {
+	if (events.length === 0) return undefined;
+	return {
+		sequenceStart: events[0]?.sequence ?? null,
+		sequenceEnd: events.at(-1)?.sequence ?? null,
+		events,
+	};
+}
+
+function observabilityEventFromEnvelope(
+	envelope: SubAgentEventEnvelope,
+	state: ObservabilityState,
+): SubAgentObservabilityEvent | undefined {
+	const event = envelope.event;
+	const base = {
+		agentId: envelope.agentId,
+		sessionId: envelope.sessionId,
+		invocationId: envelope.invocationId ?? null,
+		sequence: state.nextSequence++,
+		timestamp: new Date().toISOString(),
+	};
+	if (event.type === "agent_start") return { ...base, type: "agent.started" };
+	if (event.type === "agent_end") return undefined;
+	if (event.type === "message_update") {
+		const delta = textDeltaFromAssistantEvent(event.assistantMessageEvent);
+		if (delta === null) return undefined;
+		const bounded = delta.length > MAX_DELTA_CHARS ? delta.slice(0, MAX_DELTA_CHARS) : delta;
+		return {
+			...base,
+			type: "agent.message.delta",
+			messageId: messageIdFromMessage(event.message, base.sequence),
+			delta: bounded,
+			truncated: bounded.length < delta.length || undefined,
+		};
+	}
+	if (event.type === "message_end") {
+		const fullText = assistantTextFromEnvelope(envelope);
+		if (!fullText) return undefined;
+		const messageId = messageIdFromMessage(event.message, base.sequence);
+		return {
+			...base,
+			type: "agent.message.completed",
+			messageId,
+			preview: truncateSummary(fullText, MAX_PREVIEW_CHARS),
+			fullTextRef: { kind: "session_message", sessionId: envelope.sessionId, messageId },
+		};
+	}
+	if (
+		event.type === "tool_execution_start" ||
+		event.type === "tool_execution_update" ||
+		event.type === "tool_execution_end"
+	) {
+		const isEnd = event.type === "tool_execution_end";
+		return {
+			...base,
+			type:
+				event.type === "tool_execution_start"
+					? "agent.tool.started"
+					: event.type === "tool_execution_update"
+						? "agent.tool.updated"
+						: "agent.tool.completed",
+			toolName: String(event.toolName),
+			toolCallId: String(event.toolCallId),
+			argsSummary: summarizeToolArgs(event),
+			resultSummary: isEnd ? summarizeToolResult(event) : summarizePartialToolResult(event),
+			status: isEnd ? (event.isError ? "failed" : "completed") : "running",
+		};
+	}
+	return undefined;
+}
+
+function finalObservabilityEvent(
+	result: RunSubAgentToolResult["result"],
+	state: ObservabilityState,
+): SubAgentObservabilityEvent {
+	const type =
+		result.status === "completed"
+			? "agent.completed"
+			: result.status === "aborted"
+				? "agent.aborted"
+				: "agent.failed";
+	return {
+		type,
+		agentId: result.agentId,
+		sessionId: result.sessionId,
+		invocationId: result.invocationId ?? null,
+		sequence: state.nextSequence++,
+		timestamp: new Date(result.endedAt).toISOString(),
+	};
+}
+
+function textDeltaFromAssistantEvent(event: unknown): string | null {
+	if (typeof event !== "object" || event === null || !("type" in event)) return null;
+	const record = event as Record<string, unknown>;
+	if (record.type === "thinking_delta") return "";
+	if (record.type !== "text_delta") return null;
+	return typeof record.delta === "string" ? record.delta : null;
+}
+
+function messageIdFromMessage(message: unknown, fallbackSequence: number): string {
+	if (typeof message === "object" && message !== null) {
+		const record = message as Record<string, unknown>;
+		if (typeof record.responseId === "string") return record.responseId;
+		if (typeof record.toolCallId === "string") return record.toolCallId;
+		if (typeof record.timestamp === "number") return `message-${record.timestamp}`;
+	}
+	return `message-${fallbackSequence}`;
+}
+
+function summarizePartialToolResult(event: SubAgentEventEnvelope["event"]): string | undefined {
+	if (event.type !== "tool_execution_update") return undefined;
+	const partialResult = event.partialResult as { content?: Array<{ type: string; text?: string }> } | undefined;
+	const text = partialResult?.content
+		?.filter((content) => content.type === "text")
+		.map((content) => content.text ?? "")
+		.join("\n")
+		.trim();
+	return text ? truncateSummary(text, 100) : undefined;
+}
+
+function normalizeArtifactClaim(value: string): string | undefined {
+	const trimmed = value.trim().replace(/^`+|`+$/g, "");
+	if (!trimmed || trimmed.startsWith("~") || path.isAbsolute(trimmed)) return undefined;
+	const normalized = path.posix.normalize(trimmed.replace(/\\/g, "/"));
+	if (normalized === "." || normalized === ".." || normalized.startsWith("../") || /^[A-Za-z]:\//.test(normalized)) {
+		return undefined;
+	}
+	if (!normalized.includes("/")) return undefined;
+	return normalized;
+}
+
+function extractArtifactClaims(text: string | undefined): string[] {
+	if (!text) return [];
+	const claims = new Set<string>();
+	const artifactPattern =
+		/(?:`([^`\s]+?\.(?:md|markdown|txt|json|jsonl|yaml|yml))`|([A-Za-z0-9._-]+\/[A-Za-z0-9._/-]+?\.(?:md|markdown|txt|json|jsonl|yaml|yml)))/g;
+	for (const match of text.matchAll(artifactPattern)) {
+		const normalized = normalizeArtifactClaim(match[1] ?? match[2] ?? "");
+		if (normalized) claims.add(normalized);
+	}
+	return Array.from(claims);
+}
+
+function summarizeArtifactVerification(
+	result: RunSubAgentToolResult["result"],
+	state: ArtifactVerificationState,
+): ArtifactVerificationSummary {
+	const verifiedArtifacts = Array.from(state.verifiedArtifacts).sort();
+	const verified = new Set(verifiedArtifacts);
+	const unverifiedArtifactClaims = extractArtifactClaims(result.finalText)
+		.filter((claim) => !verified.has(claim))
+		.sort();
+	return { verifiedArtifacts, unverifiedArtifactClaims };
 }
 
 export function createRunSubAgentTool(options: CreateRunSubAgentToolOptions): ToolDefinition {
@@ -297,40 +517,62 @@ export function createRunSubAgentTool(options: CreateRunSubAgentToolOptions): To
 			});
 			let progress = initialProgressSummary();
 			let lastEmitted = progress;
-			const emitProgress = () => {
+			const observabilityState: ObservabilityState = { nextSequence: 1 };
+			const artifactVerificationState: ArtifactVerificationState = {
+				verifiedArtifacts: new Set(),
+				pendingMutationPaths: new Map(),
+			};
+			const emitProgress = (events: SubAgentObservabilityEvent[] = []) => {
+				const observability = createObservabilityBatch(events);
 				onUpdate?.({
 					content: [{ type: "text", text: formatRunSubAgentProgress(progress) }],
-					details: { progress },
+					details: observability ? { progress, observability } : { progress },
 				});
 				lastEmitted = progress;
 			};
 			const result = await runner.run(
 				{
-					...(params as RunSubAgentInput),
+					...normalizeRunSubAgentInput(params),
 					model: ctx.model,
 					thinkingLevel: ctx.model.reasoning ? undefined : "off",
 				},
 				{
 					onEvent: (envelope) => {
+						recordVerifiedArtifact(envelope, artifactVerificationState);
+						const observabilityEvent = observabilityEventFromEnvelope(envelope, observabilityState);
 						const next = reduceProgressSummary(progress, envelope);
-						if (next === progress) return;
+						if (next === progress) {
+							if (observabilityEvent) emitProgress([observabilityEvent]);
+							return;
+						}
 						progress = next;
-						if (progressSnapshotChanged(progress, lastEmitted)) emitProgress();
+						if (progressSnapshotChanged(progress, lastEmitted) || observabilityEvent) {
+							emitProgress(observabilityEvent ? [observabilityEvent] : []);
+						}
 					},
 				},
 			);
+			const artifactVerification = summarizeArtifactVerification(result, artifactVerificationState);
 			progress =
 				result.errorCode === "SUB_AGENT_BUSY"
 					? busyProgressSummary(result)
-					: finalProgressSummary(progress, result);
-			if (progressSnapshotChanged(progress, lastEmitted)) emitProgress();
+					: finalProgressSummary(progress, result, artifactVerification);
+			const finalEvent = finalObservabilityEvent(result, observabilityState);
+			if (progressSnapshotChanged(progress, lastEmitted) || finalEvent) emitProgress([finalEvent]);
 			return {
-				content: [{ type: "text", text: formatResult(result, sharedStateRoot, definitionSource, progress) }],
+				content: [
+					{
+						type: "text",
+						text: formatResult(result, sharedStateRoot, definitionSource, progress, artifactVerification),
+					},
+				],
 				details: {
 					result,
 					sharedStateRoot,
 					definitionSource,
 					progress,
+					artifactVerification,
+					observability: createObservabilityBatch([finalEvent]),
 				} satisfies RunSubAgentToolDetailsWithRoot,
 			};
 		},
@@ -364,6 +606,7 @@ function buildPromptGuidelines(definitions: PiSubAgentDefinition[], _definitionS
 			return `${definition.id}${description}`;
 		})
 		.join("; ");
+	const accessList = formatAgentSharedStateAccess(definitions);
 	return [
 		`<multi_agent_coordination>
 Use run_subagent when delegation to a registered role runtime adds clear value. Registered sub-agents: ${agentList || "none"}.
@@ -373,10 +616,12 @@ Do not use sub-agents for simple questions, tiny edits, or work the main agent c
 When invoking multiple sub-agents, first decide whether they need shared context. If yes, prepare a concise shared brief containing the user's goal, relevant repo paths or files, existing Shared State artifacts, known constraints, and expected outputs. Pass this same brief to each sub-agent to reduce duplicated context gathering and improve consistency.
 Do not over-plan simple tasks. Only prepare a shared brief when it will materially reduce duplicated work or improve sub-agent output quality.
 Run independent sub-agent calls in parallel when useful. If one call depends on another's Shared State artifact, run them in explicit rounds and wait for the dependency to exist before starting the dependent call.
+Do not set timeoutMs for normal or complex sub-agent work. If a timeout is truly necessary, use a generous value; the runtime raises short positive timeouts to at least ${MIN_SUB_AGENT_TIMEOUT_MS}ms.
 After sub-agent work finishes, use the returned status and Shared State artifacts to give the user a concise final synthesis.</multi_agent_coordination>`,
 		`<shared_state_protocol>
 Shared State is logical team memory for reusable multi-agent artifacts, not repository files and not a place for throwaway prose.
 For collaborative work, ask sub-agents to inspect relevant existing Shared State, create or update compact reusable artifacts, and return concise status plus changed logical paths.
+Sub-agent Shared State write spaces are: ${accessList}. When asking a sub-agent to write an artifact, choose a logical path under one of that sub-agent's writable spaces. Do not force every role into analysis/; use each role's declared write space.
 Shared State logical paths must be accessed through shared_state.* tools inside sub-agents. Do not treat paths like prd/... or analysis/... as cwd-relative repo paths unless you explicitly combine them with the sharedStateRoot shown in a run_subagent result.
 Prefer updating existing relevant artifacts over creating duplicates. Keep artifacts concise unless the user explicitly asks for a long document.</shared_state_protocol>`,
 		`<sub_agent_tool_boundaries>
@@ -384,6 +629,30 @@ Sub-agents can use ordinary read, grep, find, and ls tools for read-only filesys
 Sub-agents do not have ordinary write, edit, or bash tools by default; ask them to write collaboration artifacts through their shared_state.* tools.
 The run_subagent tool result is a status channel, not the primary artifact store. Avoid asking sub-agents to return long prose only in the tool result.</sub_agent_tool_boundaries>`,
 	];
+}
+
+function formatAgentSharedStateAccess(definitions: PiSubAgentDefinition[]): string {
+	if (definitions.length === 0) return "(none)";
+	return definitions
+		.map((definition) => {
+			const writeSpaces = writableSharedStateSpaces(definition);
+			const spaceList = writeSpaces.length > 0 ? writeSpaces.join(", ") : "(none)";
+			return `${definition.id}: writableSpaces=[${spaceList}]`;
+		})
+		.join("; ");
+}
+
+function writableSharedStateSpaces(definition: PiSubAgentDefinition): string[] {
+	const spaces = new Set<string>();
+	for (const surface of definition.accessSurfaces ?? []) {
+		if (surface.type !== "shared_state") continue;
+		for (const grant of surface.grants) {
+			if (grant.permissions.includes("write") || grant.permissions.includes("edit")) {
+				spaces.add(grant.space);
+			}
+		}
+	}
+	return Array.from(spaces).sort();
 }
 
 function createToolsForAccessSurface(
@@ -403,6 +672,7 @@ function formatResult(
 	sharedStateRoot: string,
 	definitionSource: "file" | "custom",
 	progress?: RunSubAgentProgressSummary,
+	artifactVerification?: ArtifactVerificationSummary,
 ): string {
 	const durationMs = Math.max(0, result.endedAt - result.startedAt);
 	const header = [
@@ -420,6 +690,15 @@ function formatResult(
 		...(progress?.lastToolError
 			? [
 					`lastToolError: ${progress.lastToolError.toolName} (${progress.lastToolError.toolCallId}) — ${progress.lastToolError.message}`,
+				]
+			: []),
+		...(artifactVerification && artifactVerification.verifiedArtifacts.length > 0
+			? [`verifiedArtifacts: ${artifactVerification.verifiedArtifacts.join(", ")}`]
+			: []),
+		...(artifactVerification && artifactVerification.unverifiedArtifactClaims.length > 0
+			? [
+					`unverifiedArtifactClaims: ${artifactVerification.unverifiedArtifactClaims.join(", ")}`,
+					"warning: sub-agent claimed Shared State artifacts without observed successful shared_state.write/edit",
 				]
 			: []),
 	];

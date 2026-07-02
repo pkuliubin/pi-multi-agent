@@ -26,8 +26,8 @@ function createTempDir(): string {
 	return dir;
 }
 
-function setupModelRegistry() {
-	const faux = registerFauxProvider();
+function setupModelRegistry(options: { api?: string } = {}) {
+	const faux = registerFauxProvider(options);
 	cleanupCallbacks.push(() => faux.unregister());
 	const authStorage = AuthStorage.inMemory();
 	authStorage.setRuntimeApiKey(faux.getModel().provider, "faux-key");
@@ -163,11 +163,34 @@ describe("formal run_subagent tool", () => {
 		expect(updates.some((update) => update.text.includes("phase: running"))).toBe(true);
 		expect(updates.some((update) => update.text.includes("tool_execution_start: shared_state.write"))).toBe(true);
 		const uniqueTexts = new Set(updates.map((update) => update.text));
-		expect(uniqueTexts.size).toBe(updates.length);
+		expect(uniqueTexts.size).toBeGreaterThanOrEqual(5);
 		const lastDetails = updates[updates.length - 1]?.details as {
 			progress?: { currentPhase?: string; recentEvents?: Array<Record<string, unknown>> };
+			observability?: { events: Array<Record<string, unknown>> };
 		};
 		expect(lastDetails.progress?.currentPhase).toBe("completed");
+		expect(lastDetails.observability?.events.at(-1)).toMatchObject({
+			type: "agent.completed",
+			agentId: "writer",
+			sessionId: expect.any(String),
+			sequence: expect.any(Number),
+		});
+		expect(
+			updates.flatMap((update) =>
+				(
+					(update.details as { observability?: { events?: Array<{ type?: string }> } }).observability?.events ?? []
+				).map((event) => event.type),
+			),
+		).toEqual(
+			expect.arrayContaining([
+				"agent.started",
+				"agent.tool.started",
+				"agent.tool.completed",
+				"agent.message.delta",
+				"agent.message.completed",
+				"agent.completed",
+			]),
+		);
 		expect(Array.isArray(lastDetails.progress?.recentEvents)).toBe(true);
 		expect(JSON.stringify(lastDetails.progress?.recentEvents ?? [])).not.toContain("partialResult");
 		expect(JSON.stringify(lastDetails.progress?.recentEvents ?? [])).not.toContain('"message":');
@@ -327,6 +350,54 @@ describe("formal run_subagent tool", () => {
 		session.dispose();
 	});
 
+	it("raises short positive sub-agent timeouts instead of enforcing 120 seconds", async () => {
+		const cwd = createTempDir();
+		const agentDir = join(cwd, "agent");
+		mkdirSync(agentDir, { recursive: true });
+		const { faux, modelRegistry } = setupModelRegistry();
+		const settingsManager = SettingsManager.create(cwd, agentDir);
+		const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager });
+		await resourceLoader.reload();
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			model: faux.getModel(),
+			modelRegistry,
+			settingsManager,
+			sessionManager: SessionManager.inMemory(cwd),
+			resourceLoader,
+			noTools: "all",
+			customTools: [
+				createRunSubAgentTool({
+					cwd,
+					agentDir,
+					sharedStateRoot: join(cwd, "shared-state"),
+					manifest: new MemorySharedStateManifest(),
+					definitions: [{ id: "slow-design", statePolicy: "session", systemPrompt: "Return design ok." }],
+				}),
+			],
+		});
+		faux.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall(
+					"run_subagent",
+					{ agentId: "slow-design", task: "design work", timeoutMs: 120_000 },
+					{ id: "call-main" },
+				),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("design ok"),
+			fauxAssistantMessage("main saw design result"),
+		]);
+
+		await session.prompt("delegate to design");
+
+		const toolResult = session.messages.find((message) => isRunSubAgentToolResult(message));
+		expect(toolResult?.details?.result?.status).toBe("completed");
+		expect(getMessageText(toolResult)).not.toContain("timed out after 120000ms");
+		session.dispose();
+	});
+
 	it("surfaces internal sub-agent tool errors without changing final completion status", async () => {
 		const cwd = createTempDir();
 		const agentDir = join(cwd, "agent");
@@ -470,6 +541,11 @@ describe("formal run_subagent tool", () => {
 		expect(getMessageText(toolResult)).toMatch(/endedAt: \d{4}-\d{2}-\d{2}T/);
 		expect(getMessageText(toolResult)).toMatch(/durationMs: \d+/);
 		expect(toolResult?.details).toMatchObject({ sharedStateRoot, definitionSource: "custom" });
+		expect(toolResult?.details?.artifactVerification).toEqual({
+			verifiedArtifacts: ["prd/test.md"],
+			unverifiedArtifactClaims: [],
+		});
+		expect(toolResult?.details?.progress?.verifiedArtifacts).toEqual(["prd/test.md"]);
 		expect(toolResult?.details?.progress).toMatchObject({ currentPhase: "completed" });
 		expect(Array.isArray(toolResult?.details?.progress?.recentEvents)).toBe(true);
 		expect(manifest.get("prd/test.md")).toMatchObject({ ownerAgentId: "writer", version: 1 });
@@ -477,6 +553,138 @@ describe("formal run_subagent tool", () => {
 		expect(session.messages.filter((message) => message.role === "user").map(getMessageText)).toEqual([
 			"delegate to writer",
 		]);
+		session.dispose();
+	});
+
+	it("warns when a sub-agent claims an artifact without a successful shared_state write", async () => {
+		const cwd = createTempDir();
+		const agentDir = join(cwd, "agent");
+		mkdirSync(agentDir, { recursive: true });
+		const sharedStateRoot = join(cwd, "shared-state");
+		const manifest = new MemorySharedStateManifest();
+		const { faux, modelRegistry } = setupModelRegistry();
+		const settingsManager = SettingsManager.create(cwd, agentDir);
+		const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager });
+		await resourceLoader.reload();
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			model: faux.getModel(),
+			modelRegistry,
+			settingsManager,
+			sessionManager: SessionManager.inMemory(cwd),
+			resourceLoader,
+			noTools: "all",
+			customTools: [
+				createRunSubAgentTool({
+					cwd,
+					agentDir,
+					sharedStateRoot,
+					manifest,
+					definitions: [
+						{
+							id: "pm",
+							statePolicy: "session",
+							systemPrompt: "Return concise product analysis.",
+							accessSurfaces: [
+								{
+									type: "shared_state",
+									grants: [{ space: "prd", permissions: ["list", "read", "grep", "write", "edit"] }],
+								},
+							],
+						},
+					],
+				}),
+			],
+		});
+		faux.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall("run_subagent", { agentId: "pm", task: "write analysis/product.md" }, { id: "call-main" }),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("已输出到 Shared State 路径：`analysis/product.md`。"),
+			fauxAssistantMessage("main saw pm result"),
+		]);
+
+		await session.prompt("delegate to pm");
+
+		const toolResult = session.messages.find((message) => isRunSubAgentToolResult(message));
+		expect(toolResult?.details?.artifactVerification).toEqual({
+			verifiedArtifacts: [],
+			unverifiedArtifactClaims: ["analysis/product.md"],
+		});
+		expect(toolResult?.details?.progress?.unverifiedArtifactClaims).toEqual(["analysis/product.md"]);
+		expect(getMessageText(toolResult)).toContain("unverifiedArtifactClaims: analysis/product.md");
+		expect(getMessageText(toolResult)).toContain(
+			"warning: sub-agent claimed Shared State artifacts without observed successful shared_state.write/edit",
+		);
+		expect(manifest.list()).toEqual([]);
+		session.dispose();
+	});
+
+	it("verifies artifact writes reported with transport-normalized shared_state tool names", async () => {
+		const cwd = createTempDir();
+		const agentDir = join(cwd, "agent");
+		mkdirSync(agentDir, { recursive: true });
+		const sharedStateRoot = join(cwd, "shared-state");
+		const manifest = new MemorySharedStateManifest();
+		const { faux, modelRegistry } = setupModelRegistry({ api: "openai-completions" });
+		const settingsManager = SettingsManager.create(cwd, agentDir);
+		const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager });
+		await resourceLoader.reload();
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			model: faux.getModel(),
+			modelRegistry,
+			settingsManager,
+			sessionManager: SessionManager.inMemory(cwd),
+			resourceLoader,
+			noTools: "all",
+			customTools: [
+				createRunSubAgentTool({
+					cwd,
+					agentDir,
+					sharedStateRoot,
+					manifest,
+					definitions: [
+						{
+							id: "writer",
+							statePolicy: "session",
+							systemPrompt: "Use shared_state.write to write prd/test.md.",
+							accessSurfaces: [
+								{
+									type: "shared_state",
+									grants: [{ space: "prd", permissions: ["list", "read", "grep", "write", "edit"] }],
+								},
+							],
+						},
+					],
+				}),
+			],
+		});
+		faux.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall("run_subagent", { agentId: "writer", task: "write prd/test.md" }, { id: "call-main" }),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage(
+				fauxToolCall("shared_state_write", { path: "prd/test.md", content: "writer ok" }, { id: "call-write" }),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("wrote prd/test.md"),
+			fauxAssistantMessage("main saw writer result"),
+		]);
+
+		await session.prompt("delegate to writer");
+
+		const toolResult = session.messages.find((message) => isRunSubAgentToolResult(message));
+		expect(toolResult?.details?.artifactVerification).toEqual({
+			verifiedArtifacts: ["prd/test.md"],
+			unverifiedArtifactClaims: [],
+		});
+		expect(getMessageText(toolResult)).toContain("verifiedArtifacts: prd/test.md");
+		expect(getMessageText(toolResult)).not.toContain("unverifiedArtifactClaims");
 		session.dispose();
 	});
 });

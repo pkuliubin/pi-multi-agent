@@ -377,6 +377,7 @@ function dedupeSubAgentDefinitions(
 	for (const agent of agents) {
 		const existing = seen.get(agent.definition.id);
 		if (existing) {
+			if (sameSubAgentDefinition(existing.definition, agent.definition)) continue;
 			diagnostics.push({
 				type: "collision",
 				message: `agent "${agent.definition.id}" collision`,
@@ -393,6 +394,24 @@ function dedupeSubAgentDefinitions(
 		seen.set(agent.definition.id, agent);
 	}
 	return { agents: Array.from(seen.values()), diagnostics };
+}
+
+function sameSubAgentDefinition(a: PiSubAgentDefinition, b: PiSubAgentDefinition): boolean {
+	return (
+		a.id === b.id &&
+		a.name === b.name &&
+		a.description === b.description &&
+		a.statePolicy === b.statePolicy &&
+		a.systemPrompt === b.systemPrompt &&
+		JSON.stringify(a.accessSurfaces ?? null) === JSON.stringify(b.accessSurfaces ?? null) &&
+		JSON.stringify(metadataWithoutSourcePath(a.metadata)) === JSON.stringify(metadataWithoutSourcePath(b.metadata))
+	);
+}
+
+function metadataWithoutSourcePath(metadata: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+	if (!metadata) return undefined;
+	const { sourcePath: _sourcePath, ...rest } = metadata;
+	return rest;
 }
 
 function readNonEmptyString(value: unknown): string | undefined {

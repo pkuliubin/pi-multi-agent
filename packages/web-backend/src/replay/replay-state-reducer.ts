@@ -8,7 +8,12 @@ import type {
 	ToolEventPayload,
 } from "../contract.ts";
 import { agentHistoryItemsFromProgressEvents } from "../events/agent-history.ts";
+import { compareHistoryItems, mergeHistoryItem } from "../events/agent-history-merge.ts";
 import { reduceRunSubagentProgress } from "../events/run-subagent-progress.ts";
+import {
+	extractAgentObservabilityFromRunSubagentPayload,
+	observabilityEvents,
+} from "../events/subagent-observability.ts";
 import type { ReplayLogRecord } from "./jsonl-log-reader.ts";
 
 export interface ReplayReductionResult {
@@ -118,6 +123,7 @@ export class ReplayStateReducer {
 					payload: { agent, changedFields: ["phase", "activeTool", "completedTools", "recentEvents"] },
 				});
 			}
+			for (const event of this.extractRunSubagentObservability(record)) events.push(event);
 		}
 
 		if (record.type === "tool_execution_end") {
@@ -136,6 +142,7 @@ export class ReplayStateReducer {
 					payload: { paths: [], reason: "run_subagent_completed" },
 				});
 			}
+			for (const event of this.extractRunSubagentObservability(record)) events.push(event);
 		}
 
 		return {
@@ -216,14 +223,16 @@ export class ReplayStateReducer {
 		});
 		if (!result) return null;
 		this.eventSequence = result.nextEventSequence;
-		this.appendAgentHistory(
-			result.agent.agentId,
-			agentHistoryItemsFromProgressEvents({
-				agentId: result.agent.agentId,
-				turnId: null,
-				recentEvents: recentProgressEvents(record),
-			}),
-		);
+		if (observabilityEvents(record.partialResult, record.result).length === 0) {
+			this.appendAgentHistory(
+				result.agent.agentId,
+				agentHistoryItemsFromProgressEvents({
+					agentId: result.agent.agentId,
+					turnId: null,
+					recentEvents: recentProgressEvents(record),
+				}),
+			);
+		}
 		if (result.sharedStateRoot) this.sharedStateRoot = result.sharedStateRoot;
 		this.agents.set(result.agent.agentId, result.agent);
 		return result.agent;
@@ -236,6 +245,29 @@ export class ReplayStateReducer {
 		for (const item of items) byId.set(item.id, mergeHistoryItem(byId.get(item.id), item));
 		this.agentHistoryById.set(agentId, Array.from(byId.values()).sort(compareHistoryItems));
 	}
+
+	private extractRunSubagentObservability(record: ReplayLogRecord): ReplayOutputEvent[] {
+		if (record.toolName !== "run_subagent") return [];
+		const extracted = extractAgentObservabilityFromRunSubagentPayload({
+			partialResult: record.partialResult,
+			result: record.result,
+			turnId: null,
+		});
+		for (const [agentId, items] of groupHistoryItemsByAgent(extracted.historyItems)) {
+			this.appendAgentHistory(agentId, items);
+		}
+		return extracted.broadcasts;
+	}
+}
+
+function groupHistoryItemsByAgent(items: AgentHistoryItem[]): Map<string, AgentHistoryItem[]> {
+	const grouped = new Map<string, AgentHistoryItem[]>();
+	for (const item of items) {
+		const existing = grouped.get(item.agentId) ?? [];
+		existing.push(item);
+		grouped.set(item.agentId, existing);
+	}
+	return grouped;
 }
 
 function recentProgressEvents(record: ReplayLogRecord): unknown[] {
@@ -243,24 +275,6 @@ function recentProgressEvents(record: ReplayLogRecord): unknown[] {
 		objectValue(objectValue(record.partialResult)?.details)?.progress ??
 		objectValue(objectValue(record.result)?.details)?.progress;
 	return arrayValue(objectValue(progress)?.recentEvents);
-}
-
-function compareHistoryItems(left: AgentHistoryItem, right: AgentHistoryItem): number {
-	return left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id);
-}
-
-function mergeHistoryItem(existing: AgentHistoryItem | undefined, next: AgentHistoryItem): AgentHistoryItem {
-	if (!existing) return next;
-	if (existing.type === "tool_call" && next.type === "tool_call") {
-		return {
-			...existing,
-			...next,
-			createdAt: existing.createdAt <= next.createdAt ? existing.createdAt : next.createdAt,
-			args: next.args ?? existing.args,
-			result: next.result ?? existing.result,
-		};
-	}
-	return next;
 }
 
 function createStreamingAssistantMessage(

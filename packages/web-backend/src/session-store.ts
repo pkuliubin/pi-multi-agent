@@ -10,6 +10,7 @@ import type {
 	SharedStateSummary,
 	TimelineMessage,
 } from "./contract.ts";
+import { compareHistoryItems, mergeHistoryItem } from "./events/agent-history-merge.ts";
 
 export interface SessionStoreState {
 	snapshot: SessionSnapshot;
@@ -193,22 +194,4 @@ function latestUpdatedAt(values: Array<string | null>): string | null {
 			.sort()
 			.at(-1) ?? null
 	);
-}
-
-function compareHistoryItems(left: AgentHistoryItem, right: AgentHistoryItem): number {
-	return left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id);
-}
-
-function mergeHistoryItem(existing: AgentHistoryItem | undefined, next: AgentHistoryItem): AgentHistoryItem {
-	if (!existing) return next;
-	if (existing.type === "tool_call" && next.type === "tool_call") {
-		return {
-			...existing,
-			...next,
-			createdAt: existing.createdAt <= next.createdAt ? existing.createdAt : next.createdAt,
-			args: next.args ?? existing.args,
-			result: next.result ?? existing.result,
-		};
-	}
-	return next;
 }

@@ -290,6 +290,11 @@ export type SseEventType =
 	| "tool.started"
 	| "tool.updated"
 	| "tool.completed"
+	| "agent.event"
+	| "agent.message.delta"
+	| "agent.tool.started"
+	| "agent.tool.updated"
+	| "agent.tool.completed"
 	| "agent.updated"
 	| "shared_state.changed"
 	| "replay.started"
@@ -331,6 +336,55 @@ export interface ToolEventPayload {
 export interface AgentUpdatedPayload {
 	agent: AgentCard;
 	changedFields: string[];
+}
+
+export type AgentObservabilityEvent =
+	| {
+			type: "agent.started" | "agent.completed" | "agent.failed" | "agent.aborted";
+			agentId: string;
+			sessionId: string;
+			invocationId: string | null;
+			sequence: number;
+			timestamp: string;
+	  }
+	| {
+			type: "agent.message.delta";
+			agentId: string;
+			sessionId: string;
+			invocationId: string | null;
+			messageId: string;
+			sequence: number;
+			timestamp: string;
+			delta: string;
+			truncated?: boolean;
+	  }
+	| {
+			type: "agent.message.completed";
+			agentId: string;
+			sessionId: string;
+			invocationId: string | null;
+			messageId: string;
+			sequence: number;
+			timestamp: string;
+			preview: string;
+			fullTextRef: { kind: "session_message"; sessionId: string; messageId: string };
+	  }
+	| {
+			type: "agent.tool.started" | "agent.tool.updated" | "agent.tool.completed";
+			agentId: string;
+			sessionId: string;
+			invocationId: string | null;
+			sequence: number;
+			timestamp: string;
+			toolName: string;
+			toolCallId: string;
+			argsSummary?: string;
+			resultSummary?: string;
+			status: "running" | "completed" | "failed" | "aborted";
+	  };
+
+export interface AgentEventPayload {
+	event: AgentObservabilityEvent;
 }
 
 export interface SharedStateChangedPayload {

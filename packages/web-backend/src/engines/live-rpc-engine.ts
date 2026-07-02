@@ -7,6 +7,7 @@ import type {
 	AbortRequest,
 	AbortResponse,
 	AgentCard,
+	AgentHistoryItem,
 	AgentHistoryResponse,
 	AgentsResponse,
 	MessagesResponse,
@@ -24,6 +25,10 @@ import { agentHistoryItemsFromProgressEvents } from "../events/agent-history.ts"
 import { normalizeAgentEvent, timelineMessageFromAgentMessage } from "../events/normalize-event.ts";
 import { reduceRunSubagentProgress } from "../events/run-subagent-progress.ts";
 import type { SseBus } from "../events/sse-bus.ts";
+import {
+	extractAgentObservabilityFromRunSubagentPayload,
+	observabilityEvents,
+} from "../events/subagent-observability.ts";
 import { readRoleSessions } from "../role-sessions/role-session-reader.ts";
 import { createEmptySessionSnapshot, type SessionStore } from "../session-store.ts";
 import { readSharedStateArtifact } from "../shared-state/artifact-reader.ts";
@@ -118,6 +123,7 @@ export class LiveRpcEngine implements BackendEngine {
 					changedFields: ["phase", "activeTool", "completedTools", "recentEvents", "lastAssistantPreview"],
 				});
 			}
+			this.broadcastRunSubagentObservability(event);
 
 			const sharedStateChange = sharedStateChangeFromToolEvent(
 				event,
@@ -296,14 +302,16 @@ export class LiveRpcEngine implements BackendEngine {
 		if (!reduced) return null;
 		this.eventSequence = reduced.nextEventSequence;
 		const progress = progressFromRunSubagentEvent(partialResult, result);
-		this.store.appendAgentHistory(
-			reduced.agent.agentId,
-			agentHistoryItemsFromProgressEvents({
-				agentId: reduced.agent.agentId,
-				turnId: this.store.getSnapshot().turn.turnId,
-				recentEvents: arrayField(progress, "recentEvents"),
-			}),
-		);
+		if (observabilityEvents(partialResult, result).length === 0) {
+			this.store.appendAgentHistory(
+				reduced.agent.agentId,
+				agentHistoryItemsFromProgressEvents({
+					agentId: reduced.agent.agentId,
+					turnId: this.store.getSnapshot().turn.turnId,
+					recentEvents: arrayField(progress, "recentEvents"),
+				}),
+			);
+		}
 		const nextAgents = upsertAgent(this.store.getAgents().agents, reduced.agent);
 		this.store.setAgents(nextAgents);
 		if (reduced.sharedStateRoot) {
@@ -316,6 +324,24 @@ export class LiveRpcEngine implements BackendEngine {
 			}));
 		}
 		return reduced.agent;
+	}
+
+	private broadcastRunSubagentObservability(event: Parameters<Parameters<LiveRpcClientLike["onEvent"]>[0]>[0]): void {
+		if (event.type !== "tool_execution_update" && event.type !== "tool_execution_end") return;
+		if (event.toolName !== "run_subagent") return;
+		const result = "result" in event ? event.result : undefined;
+		const partialResult = "partialResult" in event ? event.partialResult : undefined;
+		const extracted = extractAgentObservabilityFromRunSubagentPayload({
+			partialResult,
+			result,
+			turnId: this.store.getSnapshot().turn.turnId,
+		});
+		for (const [agentId, items] of groupHistoryItemsByAgent(extracted.historyItems)) {
+			this.store.appendAgentHistory(agentId, items);
+		}
+		for (const eventToBroadcast of extracted.broadcasts) {
+			this.broadcast(eventToBroadcast.eventType, eventToBroadcast.payload);
+		}
 	}
 
 	private broadcast(eventType: Parameters<SseBus["broadcast"]>[0], payload: unknown): void {
@@ -374,6 +400,16 @@ function upsertAgent(agents: AgentCard[], nextAgent: AgentCard): AgentCard[] {
 	return exists
 		? agents.map((agent) => (agent.agentId === nextAgent.agentId ? nextAgent : agent))
 		: [...agents, nextAgent];
+}
+
+function groupHistoryItemsByAgent(items: AgentHistoryItem[]): Map<string, AgentHistoryItem[]> {
+	const grouped = new Map<string, AgentHistoryItem[]>();
+	for (const item of items) {
+		const existing = grouped.get(item.agentId) ?? [];
+		existing.push(item);
+		grouped.set(item.agentId, existing);
+	}
+	return grouped;
 }
 
 function sharedStateChangeFromToolEvent(

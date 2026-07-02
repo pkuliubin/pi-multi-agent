@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { cors } from "hono/cors";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type {
 	AbortRequest,
@@ -21,6 +22,7 @@ export interface WebBackendDependencies {
 	sseBus?: SseBus;
 	createReplayEngine?: (dependencies: EngineDependencies) => BackendEngine;
 	createLiveEngine?: (dependencies: EngineDependencies) => BackendEngine;
+	allowedOrigins?: string[];
 }
 
 export interface EngineDependencies {
@@ -52,6 +54,16 @@ export function createWebBackendApp(dependencies: WebBackendDependencies = {}): 
 		engine: new EmptyEngine(store),
 		kind: "empty",
 	};
+	const allowedOrigins = dependencies.allowedOrigins ?? getDefaultAllowedOrigins();
+
+	app.use(
+		"/api/*",
+		cors({
+			origin: (origin) => (allowedOrigins.includes(origin) ? origin : null),
+			allowMethods: ["GET", "POST", "OPTIONS"],
+			allowHeaders: ["content-type"],
+		}),
+	);
 
 	app.onError((error, c) => {
 		const apiError = toApiError(error);
@@ -137,6 +149,18 @@ export function createWebBackendApp(dependencies: WebBackendDependencies = {}): 
 	});
 
 	return { app, store, sseBus };
+}
+
+function getDefaultAllowedOrigins(): string[] {
+	const configured = process.env.PI_WEB_BACKEND_ALLOWED_ORIGINS;
+	if (configured) {
+		return configured
+			.split(",")
+			.map((origin) => origin.trim())
+			.filter((origin) => origin.length > 0);
+	}
+
+	return ["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:4173", "http://127.0.0.1:4173"];
 }
 
 async function readJsonBody<T>(request: Request, fallback?: T): Promise<T> {
