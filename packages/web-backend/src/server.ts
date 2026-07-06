@@ -84,7 +84,11 @@ export function createWebBackendApp(dependencies: WebBackendDependencies = {}): 
 		return c.json(await engineState.engine.getSharedStateArtifact(artifactPath));
 	});
 
-	app.get("/api/events", (_c) => createSseResponse(sseBus));
+	app.get("/api/events", (c) =>
+		createSseResponse(sseBus, {
+			closeAfterOpen: c.req.query("closeAfterOpen") === "1" || !acceptsEventStream(c.req.header("accept")),
+		}),
+	);
 
 	app.post("/api/session/start", async (c) => {
 		const request = await readJsonBody<StartSessionRequest>(c.req.raw);
@@ -177,7 +181,11 @@ async function readJsonBody<T>(request: Request, fallback?: T): Promise<T> {
 	}
 }
 
-function createSseResponse(sseBus: SseBus): Response {
+function acceptsEventStream(acceptHeader: string | undefined): boolean {
+	return acceptHeader?.includes("text/event-stream") ?? false;
+}
+
+function createSseResponse(sseBus: SseBus, options: { closeAfterOpen?: boolean } = {}): Response {
 	const encoder = new TextEncoder();
 	let cleanup: (() => void) | null = null;
 	let heartbeat: NodeJS.Timeout | null = null;
@@ -194,7 +202,25 @@ function createSseResponse(sseBus: SseBus): Response {
 			};
 
 			cleanup = sseBus.addClient(client);
-			controller.enqueue(encoder.encode(": connected\n\n"));
+			client.write({
+				eventId: "connected",
+				eventType: "connection.opened",
+				mode: null,
+				sessionId: null,
+				turnId: null,
+				sequence: 0,
+				createdAt: new Date().toISOString(),
+				payload: { connected: true },
+			});
+			if (options.closeAfterOpen) {
+				for (const envelope of sseBus.getRecentEnvelopes()) {
+					client.write(envelope);
+				}
+				cleanup();
+				cleanup = null;
+				controller.close();
+				return;
+			}
 			heartbeat = setInterval(() => {
 				controller.enqueue(encoder.encode(": heartbeat\n\n"));
 			}, 15000);

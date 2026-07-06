@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseReplayJsonl } from "../src/replay/jsonl-log-reader.ts";
+import { parseReplayJsonl } from "../src/replay/legacy-jsonl/jsonl-log-reader.ts";
 
 describe("parseReplayJsonl", () => {
 	it("parses LF and CRLF JSONL records", () => {

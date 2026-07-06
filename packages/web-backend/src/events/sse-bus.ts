@@ -12,15 +12,27 @@ export interface SseClient {
 	close(): void;
 }
 
+const DEFAULT_RECENT_EVENT_LIMIT = 1000;
+
 export class SseBus {
 	private clients = new Set<SseClient>();
 	private sequence = 0;
+	private recentEnvelopes: SseEnvelope[] = [];
+	private readonly recentEventLimit: number;
+
+	constructor(options: { recentEventLimit?: number } = {}) {
+		this.recentEventLimit = options.recentEventLimit ?? DEFAULT_RECENT_EVENT_LIMIT;
+	}
 
 	addClient(client: SseClient): () => void {
 		this.clients.add(client);
 		return () => {
 			this.clients.delete(client);
 		};
+	}
+
+	getRecentEnvelopes(): SseEnvelope[] {
+		return [...this.recentEnvelopes];
 	}
 
 	broadcast<TPayload>(eventType: SseEventType, context: SseEventContext, payload: TPayload): SseEnvelope<TPayload> {
@@ -35,6 +47,12 @@ export class SseBus {
 			payload,
 		};
 
+		this.broadcastEnvelope(envelope);
+		return envelope;
+	}
+
+	broadcastEnvelope(envelope: SseEnvelope): SseEnvelope {
+		this.remember(envelope);
 		for (const client of this.clients) {
 			client.write(envelope);
 		}
@@ -47,6 +65,13 @@ export class SseBus {
 			client.close();
 		}
 		this.clients.clear();
+	}
+
+	private remember(envelope: SseEnvelope): void {
+		this.recentEnvelopes.push(envelope);
+		if (this.recentEnvelopes.length > this.recentEventLimit) {
+			this.recentEnvelopes.splice(0, this.recentEnvelopes.length - this.recentEventLimit);
+		}
 	}
 }
 

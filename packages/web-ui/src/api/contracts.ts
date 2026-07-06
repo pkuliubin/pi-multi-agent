@@ -1,5 +1,7 @@
 export type BackendMode = "live" | "replay";
 
+export type ReplaySource = "sse_capture";
+
 export type AgentPhase = "idle" | "starting" | "running" | "completed" | "failed" | "aborted";
 
 export type RunStatus = "idle" | "running" | "completed" | "failed" | "aborted";
@@ -14,6 +16,10 @@ export type ApiErrorCode =
 	| "ARTIFACT_NOT_FOUND"
 	| "PROCESS_EXITED"
 	| "REPLAY_ENDED"
+	| "REPLAY_FILE_NOT_FOUND"
+	| "REPLAY_FILE_INVALID_JSON"
+	| "REPLAY_KIND_UNSUPPORTED"
+	| "REPLAY_SCHEMA_UNSUPPORTED"
 	| "UNSUPPORTED_IN_REPLAY"
 	| "INTERNAL_ERROR";
 
@@ -95,6 +101,7 @@ export interface SessionSnapshot {
 		speed: number | null;
 		cursor: number | null;
 		totalEvents: number | null;
+		source?: ReplaySource;
 	} | null;
 	counts: {
 		messages: number;
@@ -285,6 +292,7 @@ export interface SharedStateSearchResponse {
 export type SseEventType =
 	| "session.started"
 	| "session.stopped"
+	| "connection.opened"
 	| "message.delta"
 	| "message.completed"
 	| "tool.started"
@@ -304,7 +312,7 @@ export type SseEventType =
 export interface SseEnvelope<TPayload = SsePayload> {
 	eventId: string;
 	eventType: SseEventType;
-	mode: BackendMode;
+	mode: BackendMode | null;
 	sessionId: string | null;
 	turnId: string | null;
 	sequence: number;

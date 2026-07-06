@@ -211,6 +211,51 @@ describe("webUiReducer", () => {
 		expect(nextEvent.agentsById.da?.displayName).toBe("New Session Agent");
 	});
 
+	it("accepts replay lifecycle events around captured replay sequences", () => {
+		const started = webUiReducer(initialWebUiState, {
+			type: "sse.received",
+			envelope: {
+				eventId: "replay-started",
+				eventType: "replay.started",
+				mode: "replay",
+				sessionId: "session-1",
+				turnId: null,
+				sequence: 0,
+				createdAt: "2026-05-28T10:00:00.000Z",
+				payload: { logPath: "fixture", cursor: 0, totalEvents: 1, speed: 1 },
+			},
+		});
+		const captured = webUiReducer(started, {
+			type: "sse.received",
+			envelope: {
+				eventId: "event-1",
+				eventType: "message.delta",
+				mode: "replay",
+				sessionId: "session-1",
+				turnId: "turn-1",
+				sequence: 1,
+				createdAt: "2026-05-28T10:00:01.000Z",
+				payload: { messageId: "stream-1", role: "assistant", source: "main", agentId: null, delta: "ok" },
+			},
+		});
+		const completed = webUiReducer(captured, {
+			type: "sse.received",
+			envelope: {
+				eventId: "replay-completed",
+				eventType: "replay.completed",
+				mode: "replay",
+				sessionId: "session-1",
+				turnId: "turn-1",
+				sequence: 2,
+				createdAt: "2026-05-28T10:00:02.000Z",
+				payload: { logPath: "fixture", cursor: 1, totalEvents: 1, speed: 1 },
+			},
+		});
+
+		expect(captured.messages[0]?.content).toBe("ok");
+		expect(completed.connection.lastSequence).toBe(2);
+	});
+
 	it("prunes cached artifact content that is no longer in the manifest", () => {
 		const loaded = webUiReducer(initialWebUiState, {
 			type: "artifact.load.completed",

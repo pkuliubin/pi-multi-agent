@@ -242,6 +242,7 @@ function applySseEnvelope(state: WebUiState, envelope: SseEnvelope): WebUiState 
 			return invalidateArtifacts(baseState, envelope.payload as SharedStateChangedPayload);
 		case "error":
 			return applyBackendError(baseState, envelope.payload as ErrorPayload);
+		case "connection.opened":
 		case "session.started":
 		case "session.stopped":
 		case "replay.started":
